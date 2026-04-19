@@ -1,6 +1,6 @@
 # Ashrise
 
-Sprint 1 deja solamente el subset repo-local: Postgres 15, el schema SQL y una verificacion de sanidad del seed. La API de Ashrise queda explicitamente para Sprint 2.
+Sprint 2 deja el repo-local completo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer y tests happy path sobre Docker. Langfuse queda solo como placeholder de config y los prompts siguen repo-locales en `prompts/`.
 
 ## Requisitos
 
@@ -11,6 +11,8 @@ Sprint 1 deja solamente el subset repo-local: Postgres 15, el schema SQL y una v
 
 En Windows puede pasar que `make` este instalado via MSYS2 pero no aparezca en PowerShell o Codex, porque `C:\msys64\usr\bin` no siempre queda en el `PATH` de esas sesiones. Ademas, algunas instalaciones de PowerShell bloquean `.ps1` por `ExecutionPolicy`.
 
+El `Makefile` ya envuelve `docker compose` con `MSYS_NO_PATHCONV=1` y `MSYS2_ARG_CONV_EXCL="*"`, asi que no hace falta exportar esas variables a mano para `make seed` o `make verify`.
+
 Opciones:
 
 - usar MSYS2 directamente si preferis esa terminal
@@ -19,6 +21,17 @@ Opciones:
 - correr `powershell -ExecutionPolicy Bypass -File .\scripts\windows\ensure-make.ps1 -PersistUserPath` para agregar `C:\msys64\usr\bin` al `PATH` de usuario sin duplicarlo
 
 Despues de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell o Codex para que nuevas sesiones vean el cambio.
+
+## Flujo repo-local
+
+- `make up`: levanta `db` y `api`
+- `make seed`: recrea la base `ashrise` y aplica `sql/001_init.sql`
+- `make verify`: valida conteos y `project_state_code`
+- `make test`: corre `pytest` dentro del contenedor `api`
+- `make psql`: abre `psql` contra la base `ashrise`
+- `make down`: baja los servicios
+- `make logs`: sigue logs de `db`
+- `make logs-api`: sigue logs de `api`
 
 ## Variables de entorno
 
@@ -30,16 +43,19 @@ Despues de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell
 - `LANGFUSE_PUBLIC_KEY`
 - `LANGFUSE_SECRET_KEY`
 
-En Sprint 1 quedan solo documentadas; este repo todavia no levanta API.
+Para el flujo local de Sprint 2, Docker Compose usa `ASHRISE_TOKEN=dev-token` si no hay override en el entorno.
 
-## Comandos operativos
+## API local
 
-- `make up`: levanta Postgres 15 y espera a que el contenedor quede healthy.
-- `make down`: apaga el stack y conserva el volumen persistente.
-- `make logs`: sigue los logs del contenedor `db`.
-- `make seed`: recrea la base `ashrise` desde cero y aplica `sql/001_init.sql`.
-- `make verify`: valida conteos del seed y que cada `project_state_code` coincida con el seed actual.
-- `make psql`: abre `psql` dentro del contenedor contra la base `ashrise`.
+Con el stack levantado, la API queda en `http://localhost:8080`.
+
+Ejemplo:
+
+```powershell
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/health
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/projects
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/candidates
+```
 
 ## Flujo recomendado
 
@@ -47,13 +63,21 @@ En Sprint 1 quedan solo documentadas; este repo todavia no levanta API.
 make up
 make seed
 make verify
+make test
 make psql
 ```
 
-## Alcance real del sprint
+## Alcance actual
 
 - Postgres 15 local con volumen persistente
-- `sql/001_init.sql` aplicado manualmente via `make seed`
+- `sql/001_init.sql` aplicado via `make seed`
 - verificacion repo-local via `sql/verify_sanity.sql`
+- API FastAPI minima con auth Bearer para operacion e investigacion
+- tests happy path con `pytest`
 
-La API minima de Ashrise empieza en Sprint 2, no en este repo-local bootstrap.
+## Lo que sigue siendo Sprint 3+
+
+- `ashrise-hook` y wrapper runtime para sesiones
+- bot de Telegram
+- captura automatica de `ashrise-close`
+- Langfuse operativo mas alla de placeholders de config

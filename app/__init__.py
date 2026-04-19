@@ -1,0 +1,1 @@
+"""Ashrise Core application package."""
