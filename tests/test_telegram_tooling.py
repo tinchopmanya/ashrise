@@ -65,6 +65,16 @@ class FakeTelegramApiClient:
         old = datetime.now(UTC) - timedelta(days=10)
         return {"created_at": old.isoformat()}
 
+    def run_agent(self, payload):
+        return {
+            "target_type": payload["target_type"],
+            "target_id": payload["target_id"],
+            "report_type": "audit_report",
+            "summary": "Audit complete",
+            "run": {"id": "run-1", "status": "completed"},
+            "report": {"verdict": "keep", "confidence": 0.74},
+        }
+
 
 def test_handle_command_creates_idea():
     api = FakeTelegramApiClient()
@@ -85,3 +95,10 @@ def test_build_daily_summary_counts_pending_and_stale():
     summary = build_daily_summary(api, today=date(2026, 4, 20))
     assert "research_queue pending due today: 2" in summary
     assert "active projects without audit in last 7 days: 2" in summary
+
+
+def test_handle_command_runs_auditar():
+    api = FakeTelegramApiClient()
+    response = handle_command(api, "/auditar procurement-core", chat_id=1, message_id=1)
+    assert "Audit complete" in response
+    assert "run-1" in response

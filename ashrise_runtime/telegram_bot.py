@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from ashrise_runtime.api_client import AshriseApiClient
+from ashrise_runtime.api_client import AshriseApiClient, AshriseApiError
 from ashrise_runtime.session_store import load_json, remove_file, save_json, telegram_offset_file
 
 
@@ -152,6 +152,31 @@ def build_candidate_message(api: AshriseApiClient, candidate_ref: str) -> str:
     return "\n".join(lines)
 
 
+def build_auditar_message(api: AshriseApiClient, target_ref: str) -> str:
+    errors: list[str] = []
+
+    for target_type in ("project", "candidate"):
+        try:
+            result = api.run_agent({"target_type": target_type, "target_id": target_ref})
+        except AshriseApiError as exc:
+            if exc.status_code == 404:
+                errors.append(f"{target_type}: not found")
+                continue
+            raise
+
+        report = result["report"]
+        verdict = report.get("verdict") or "n/a"
+        confidence = report.get("confidence")
+        return (
+            f"Auditoria corrida sobre {target_type} {target_ref}\n"
+            f"run: {result['run']['id']} ({result['run']['status']})\n"
+            f"report: {result['report_type']} / verdict={verdict} / confidence={confidence}\n"
+            f"summary: {result['summary']}"
+        )
+
+    return f"No encontre proyecto ni candidata para '{target_ref}'."
+
+
 def find_stale_projects(
     api: AshriseApiClient,
     *,
@@ -252,11 +277,9 @@ def handle_command(
         return build_candidate_message(api, argument)
 
     if command == "/auditar":
-        target = argument or "<proyecto|candidata>"
-        return (
-            f"/auditar {target}\n"
-            "Stub de Sprint 3: Sprint 4 agrega el agente y el endpoint /agent/run."
-        )
+        if not argument:
+            return "Uso: /auditar <proyecto|candidata>"
+        return build_auditar_message(api, argument)
 
     return "Comando no reconocido. Usa /help."
 

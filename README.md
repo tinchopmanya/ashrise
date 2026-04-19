@@ -1,6 +1,6 @@
 # Ashrise
 
-Sprint 3 deja el repo-local completo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer, `ashrise-hook`, wrapper para Codex, bot de Telegram por polling y recordatorio diario pasivo cron-friendly. Langfuse queda solo como placeholder de config y los prompts siguen repo-locales en `prompts/`.
+Sprint 4 deja el repo-local operativo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer, runtime tooling (`ashrise-hook`, wrapper Codex, bot Telegram), agente unificado auditor+investigador, `POST /agent/run` y job semanal cron-friendly. Langfuse sigue solo como placeholder de config; los prompts viven repo-locales temporalmente en `prompts/`.
 
 ## Requisitos
 
@@ -80,6 +80,8 @@ make psql
 - wrapper repo-local para Codex
 - bot de Telegram por polling
 - recordatorio diario pasivo via `reminder-once`
+- agente unificado para auditoria de proyectos e investigacion de candidatas
+- `POST /agent/run` y job semanal repo-local
 
 ## Hook de sesiones
 
@@ -141,7 +143,7 @@ Comandos disponibles:
 - `/idea <texto>`
 - `/candidatas [categoria]`
 - `/candidata <slug>`
-- `/auditar <proyecto|candidata>` devuelve stub claro hasta Sprint 4
+- `/auditar <proyecto|candidata>` dispara `POST /agent/run`
 
 ## Recordatorio diario pasivo
 
@@ -159,9 +161,52 @@ python .\scripts\telegram_bot.py reminder-once
 
 La idea es programarlo a las 9am con Task Scheduler, cron o un scheduler externo simple.
 
-## Lo que sigue siendo Sprint 4+
+## Agente unificado
 
-- agente unificado auditor + investigador
-- endpoint `/agent/run`
-- `/auditar` real en Telegram
+`POST /agent/run` dispara el agente unificado. Usa `runs.agent='auditor'` para `project` y `runs.agent='investigator'` para `candidate`, persiste el reporte en las tablas existentes y actualiza `last_audit_id` o `last_research_id`.
+
+Ejemplos:
+
+```powershell
+curl -H "Authorization: Bearer dev-token" `
+  -H "Content-Type: application/json" `
+  -X POST `
+  -d '{"target_type":"project","target_id":"procurement-licitaciones"}' `
+  http://localhost:8080/agent/run
+```
+
+```powershell
+curl -H "Authorization: Bearer dev-token" `
+  -H "Content-Type: application/json" `
+  -X POST `
+  -d '{"target_type":"candidate","target_id":"mi-candidata"}' `
+  http://localhost:8080/agent/run
+```
+
+El research externo todavia no esta integrado a un proveedor real. `ashrise.research` deja interfaz estable y usa fallback controlado `provider=stub`, para no bloquear el sprint ni romper la API si faltan credenciales.
+
+## Job semanal
+
+El job semanal corre una vez, usando la API existente. Prioriza primero:
+
+1. `procurement-licitaciones`
+2. `neytiri`
+3. `osla-small-qw`
+4. `procurement-core`
+5. `osla-medium-long`
+
+Luego suma proyectos activos y cualquier item `research_queue.status='pending'`.
+
+```powershell
+$env:ASHRISE_BASE_URL = "http://localhost:8080"
+$env:ASHRISE_TOKEN = "dev-token"
+python .\scripts\run_weekly_agent.py
+```
+
+Es cron-friendly: la idea es programarlo semanalmente con Task Scheduler, cron o un scheduler externo simple.
+
+## Lo que sigue siendo Sprint 5+
+
 - Langfuse operativo mas alla de placeholders de config
+- migrar prompts criticos desde `prompts/` a Langfuse
+- recordatorio activo que dispare agentes automaticamente

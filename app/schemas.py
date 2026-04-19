@@ -178,3 +178,9 @@ class CandidatePatch(StrictModel):
     promoted_to_project_id: str | None = None
     last_research_id: UUID | None = None
     metadata: dict[str, Any] | None = None
+
+
+class AgentRunRequest(StrictModel):
+    target_type: Literal["project", "candidate"]
+    target_id: str
+    prompt_ref: str | None = None

@@ -141,3 +141,6 @@ class AshriseApiClient:
     def get_research_queue(self, due: str | None = None) -> list[dict[str, Any]]:
         params = {"due": due} if due else None
         return self.request_json("GET", "/research-queue", params=params)
+
+    def run_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request_json("POST", "/agent/run", json=payload)

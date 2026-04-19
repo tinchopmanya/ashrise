@@ -1,10 +1,9 @@
-#!/usr/bin/env python
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ashrise_runtime.codex_wrapper import main
+from ashrise_runtime.weekly_agent import main
 
 
 if __name__ == "__main__":
