@@ -1,6 +1,6 @@
 # Ashrise
 
-Sprint 2 deja el repo-local completo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer y tests happy path sobre Docker. Langfuse queda solo como placeholder de config y los prompts siguen repo-locales en `prompts/`.
+Sprint 3 deja el repo-local completo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer, `ashrise-hook`, wrapper para Codex, bot de Telegram por polling y recordatorio diario pasivo cron-friendly. Langfuse queda solo como placeholder de config y los prompts siguen repo-locales en `prompts/`.
 
 ## Requisitos
 
@@ -42,6 +42,8 @@ Despues de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell
 - `LANGFUSE_BASE_URL`
 - `LANGFUSE_PUBLIC_KEY`
 - `LANGFUSE_SECRET_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
 Para el flujo local de Sprint 2, Docker Compose usa `ASHRISE_TOKEN=dev-token` si no hay override en el entorno.
 
@@ -74,10 +76,92 @@ make psql
 - verificacion repo-local via `sql/verify_sanity.sql`
 - API FastAPI minima con auth Bearer para operacion e investigacion
 - tests happy path con `pytest`
+- `ashrise-hook` para abrir/cerrar runs contra la API
+- wrapper repo-local para Codex
+- bot de Telegram por polling
+- recordatorio diario pasivo via `reminder-once`
 
-## Lo que sigue siendo Sprint 3+
+## Hook de sesiones
 
-- `ashrise-hook` y wrapper runtime para sesiones
-- bot de Telegram
-- captura automatica de `ashrise-close`
+Defini estas variables antes de usar el hook contra la API:
+
+```powershell
+$env:ASHRISE_BASE_URL = "http://localhost:8080"
+$env:ASHRISE_TOKEN = "dev-token"
+```
+
+Abrir una sesion:
+
+```powershell
+python .\scripts\ashrise-hook.py session-start --project ashrise
+```
+
+Cerrar una sesion usando un transcript:
+
+```powershell
+python .\scripts\ashrise-hook.py session-stop --project ashrise --transcript .\.ashrise\transcripts\ashrise-YYYYMMDD-HHMMSS.log
+```
+
+Si no queres usar archivo, `session-stop` tambien acepta `--text` o stdin.
+
+## Wrapper de Codex
+
+El wrapper abre el run, ejecuta un comando, guarda transcript en `.ashrise/transcripts/` y llama `session-stop` al final.
+
+Ejemplo generico:
+
+```powershell
+python .\scripts\run_codex_task.py --project ashrise -- codex exec "Implement something"
+```
+
+Si tu flujo de Codex consume prompt por stdin, podes pasar contexto + tarea con `--prompt-file` o `--prompt-text`.
+
+## Bot de Telegram
+
+El bot usa polling y habla contra la API, no contra la base.
+
+Variables necesarias:
+
+```powershell
+$env:ASHRISE_BASE_URL = "http://localhost:8080"
+$env:ASHRISE_TOKEN = "dev-token"
+$env:TELEGRAM_BOT_TOKEN = "..."
+```
+
+Modo polling:
+
+```powershell
+python .\scripts\telegram_bot.py polling
+```
+
+Comandos disponibles:
+
+- `/estado <proyecto>`
+- `/ultimo <proyecto>`
+- `/idea <texto>`
+- `/candidatas [categoria]`
+- `/candidata <slug>`
+- `/auditar <proyecto|candidata>` devuelve stub claro hasta Sprint 4
+
+## Recordatorio diario pasivo
+
+`reminder-once` es cron-friendly. Cuenta:
+
+- items en `research_queue` con `due <= today`
+- proyectos activos sin audit en los ultimos 7 dias
+
+Ejemplo:
+
+```powershell
+$env:TELEGRAM_CHAT_ID = "123456"
+python .\scripts\telegram_bot.py reminder-once
+```
+
+La idea es programarlo a las 9am con Task Scheduler, cron o un scheduler externo simple.
+
+## Lo que sigue siendo Sprint 4+
+
+- agente unificado auditor + investigador
+- endpoint `/agent/run`
+- `/auditar` real en Telegram
 - Langfuse operativo mas alla de placeholders de config
