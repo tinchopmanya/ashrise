@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ashrise.langfuse_support import get_langfuse_client, record_research_trace
+from ashrise.sanitization import redact_sensitive_text, sanitize_for_metadata
 
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -338,9 +339,9 @@ def _trace_provider_usage(
         prompt_ref=context.prompt_ref,
         provider=provider,
         operation=operation,
-        input_payload={"query": query},
-        output_payload=output_payload,
-        metadata=metadata,
+        input_payload=sanitize_for_metadata({"query": query}),
+        output_payload=sanitize_for_metadata(output_payload),
+        metadata=sanitize_for_metadata(metadata),
     )
 
 
@@ -379,7 +380,7 @@ def _build_stub_search_results(
         result["fallback"] = True
         result["query"] = query
         if fallback_reason:
-            result["fallback_reason"] = fallback_reason
+            result["fallback_reason"] = redact_sensitive_text(fallback_reason)
         results.append(result)
     return results
 
@@ -398,7 +399,7 @@ def _build_stub_competitors(
         competitor["fallback"] = True
         competitor["search_region"] = region
         if fallback_reason:
-            competitor["fallback_reason"] = fallback_reason
+            competitor["fallback_reason"] = redact_sensitive_text(fallback_reason)
         competitors.append(competitor)
     return competitors
 
@@ -410,7 +411,7 @@ def _build_stub_ai_risk(topic: str, *, fallback_reason: str | None = None) -> di
     result["fallback"] = True
     result["topic"] = topic
     if fallback_reason:
-        result["fallback_reason"] = fallback_reason
+        result["fallback_reason"] = redact_sensitive_text(fallback_reason)
     return result
 
 
@@ -646,14 +647,15 @@ def _provider_search(
         )
         return results or None, None
     except Exception as exc:  # pragma: no cover - network/failure path exercised through API fallback tests
+        safe_error = redact_sensitive_text(str(exc))
         _trace_provider_usage(
             provider=settings.provider,
             operation=operation,
             query=query,
-            metadata={"fallback": True, "error": str(exc)},
-            output_payload={"result_count": 0, "error": str(exc)},
+            metadata={"fallback": True, "error": safe_error},
+            output_payload={"result_count": 0, "error": safe_error},
         )
-        return None, str(exc)
+        return None, safe_error
 
 
 def web_search(query: str, recency_days: int = 30) -> list[dict[str, Any]]:

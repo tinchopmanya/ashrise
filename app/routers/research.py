@@ -140,6 +140,10 @@ def promote_candidate(
     if candidate.get("status") == "promoted":
         raise HTTPException(status_code=409, detail=f"Candidate '{candidate_ref}' is already promoted")
 
+    existing_project = fetch_one(conn, "SELECT id FROM projects WHERE id = %s", (payload.project_id,))
+    if existing_project is not None:
+        raise HTTPException(status_code=409, detail=f"Project '{payload.project_id}' already exists")
+
     promotion = dict(candidate.get("metadata") or {}).get("promotion") or {}
     if not promotion.get("ready"):
         raise HTTPException(

@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from ashrise.sanitization import redact_sensitive_text
 from ashrise_runtime.api_client import AshriseApiClient, AshriseApiError
 from ashrise_runtime.session_store import load_json, remove_file, save_json, telegram_offset_file
 
@@ -339,11 +340,12 @@ def run_active_daily_cycle(
             )
         except Exception as exc:
             failures += 1
+            safe_error = redact_sensitive_text(str(exc)) or "unknown error"
             api.patch_research_queue(
                 str(queue_item["id"]),
                 {
                     "status": "pending",
-                    "notes": f"{today.isoformat()} failed: {exc}",
+                    "notes": f"{today.isoformat()} failed: {safe_error}",
                 },
             )
             results.append(
@@ -352,7 +354,7 @@ def run_active_daily_cycle(
                     "target_type": target_type,
                     "target_id": target_id,
                     "status": "failed",
-                    "error": str(exc),
+                    "error": safe_error,
                 }
             )
 

@@ -208,3 +208,24 @@ def test_build_active_daily_summary_mentions_ready_candidates():
     )
     assert "Ready to promote" in summary
     assert "cand-advance" in summary
+
+
+def test_run_active_daily_cycle_resets_failed_queue_item_and_redacts_error():
+    class FailingTelegramApiClient(FakeTelegramApiClient):
+        def run_agent(self, payload):
+            raise RuntimeError("Authorization: Bearer super-secret-token api_key=brave-real-key")
+
+    api = FailingTelegramApiClient()
+    result = run_active_daily_cycle(api, today=date(2026, 4, 20))
+
+    assert result["processed"] == 0
+    assert result["failures"] == 3
+    failed_items = [item for item in result["results"] if item.get("status") == "failed"]
+    assert failed_items
+    assert all("[REDACTED]" in item["error"] for item in failed_items)
+    assert all("super-secret-token" not in item["error"] for item in failed_items)
+
+    reset_patches = [payload for _, payload in api.queue_patches if payload.get("status") == "pending"]
+    assert reset_patches
+    assert all("[REDACTED]" in patch["notes"] for patch in reset_patches)
+    assert all("brave-real-key" not in patch["notes"] for patch in reset_patches)

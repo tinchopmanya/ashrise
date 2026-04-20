@@ -117,7 +117,7 @@ $env:ASHRISE_RESEARCH_COUNTRY = "UY"
 $env:ASHRISE_RESEARCH_SEARCH_LANG = "es"
 ```
 
-Si `ASHRISE_RESEARCH_PROVIDER=stub`, falta `ASHRISE_RESEARCH_API_KEY` o Brave falla, el flujo no se rompe: el agente vuelve al fallback stub y el reporte deja `research_fallback=true` con una razón breve.
+Si `ASHRISE_RESEARCH_PROVIDER=stub`, falta `ASHRISE_RESEARCH_API_KEY` o Brave falla, el flujo no se rompe: el agente vuelve al fallback stub y el reporte deja `research_fallback=true` con una razón breve. Esas razones y los errores de provider que se persisten en metadata/traces pasan por redacción básica de secretos para no exponer tokens por accidente.
 
 ## API local
 

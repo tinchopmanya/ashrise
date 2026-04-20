@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ashrise.sanitization import sanitize_for_metadata
+
 try:  # pragma: no cover - exercised through integration paths
     from langfuse import Langfuse
 except ImportError:  # pragma: no cover - fallback when dependency is absent
@@ -224,15 +226,15 @@ def record_agent_trace(
             name=f"ashrise.agent.{target_type}",
             as_type="generation",
             trace_context={"trace_id": trace_id},
-            input=input_payload,
-            output=output_payload,
-            metadata={
+            input=sanitize_for_metadata(input_payload),
+            output=sanitize_for_metadata(output_payload),
+            metadata=sanitize_for_metadata({
                 **metadata,
                 "run_id": str(run_id),
                 "target_type": target_type,
                 "target_id": target_id,
                 "prompt_ref": prompt.prompt_ref,
-            },
+            }),
             prompt=prompt.client_prompt,
         ):
             pass
@@ -267,9 +269,9 @@ def record_research_trace(
             name=f"ashrise.research.{provider}.{operation}",
             as_type="generation",
             trace_context={"trace_id": trace_id},
-            input=input_payload,
-            output=output_payload,
-            metadata={
+            input=sanitize_for_metadata(input_payload),
+            output=sanitize_for_metadata(output_payload),
+            metadata=sanitize_for_metadata({
                 **(metadata or {}),
                 "component": "research-provider",
                 "provider": provider,
@@ -278,7 +280,7 @@ def record_research_trace(
                 "target_type": target_type,
                 "target_id": target_id,
                 "prompt_ref": prompt_ref,
-            },
+            }),
         ):
             pass
         try:

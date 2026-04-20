@@ -205,3 +205,51 @@ def test_candidate_promotion_creates_project_and_marks_candidate_promoted(
     ).fetchone()
     assert candidate_row["status"] == "promoted"
     assert candidate_row["promoted_to_project_id"] == "approval-candidate-project"
+
+
+def test_candidate_promotion_rejects_duplicate_project_id(
+    app_client,
+    auth_headers,
+    monkeypatch,
+):
+    created = app_client.post(
+        "/candidates",
+        headers=auth_headers,
+        json={
+            "slug": "duplicate-project-candidate",
+            "name": "Duplicate Project Candidate",
+            "category": "learning",
+            "parent_group": "osla-learning",
+            "hypothesis": "Learning telemetry patterns for duplicate project id checks",
+        },
+    )
+    assert created.status_code == 201
+
+    monkeypatch.setattr(
+        "ashrise.unified_agent._candidate_verdict",
+        lambda candidate, kill_hits, ai_risk: (
+            "advance",
+            0.86,
+            [{"title": "keep going", "why": "enough evidence"}],
+        ),
+    )
+
+    for _ in range(3):
+        response = app_client.post(
+            "/agent/run",
+            headers=auth_headers,
+            json={"target_type": "candidate", "target_id": "duplicate-project-candidate"},
+        )
+        assert response.status_code == 200
+
+    promoted = app_client.post(
+        "/candidates/duplicate-project-candidate/promote",
+        headers=auth_headers,
+        json={
+            "project_id": "procurement-core",
+            "name": "Should Not Be Created",
+            "host_machine": "i7-main",
+        },
+    )
+    assert promoted.status_code == 409
+    assert "already exists" in promoted.json()["detail"]

@@ -157,3 +157,31 @@ def test_agent_run_falls_back_to_stub_when_real_provider_fails(app_client, auth_
     assert payload["report"]["metadata"]["research_provider"] == "stub"
     assert payload["report"]["metadata"]["research_fallback"] is True
     assert "provider unavailable" in payload["report"]["metadata"]["research_fallback_reason"]
+
+
+def test_agent_run_redacts_secrets_in_research_fallback_metadata(app_client, auth_headers, monkeypatch):
+    monkeypatch.setenv("ASHRISE_RESEARCH_PROVIDER", "brave")
+    monkeypatch.setenv("ASHRISE_RESEARCH_API_KEY", "brave-real-key")
+    monkeypatch.setenv("ASHRISE_TOKEN", "super-secret-token")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-local-secret")
+
+    def _boom(query, recency_days, settings):
+        raise RuntimeError(
+            "provider unavailable Authorization: Bearer super-secret-token "
+            "X-Subscription-Token=brave-real-key secret_key=sk-lf-local-secret"
+        )
+
+    monkeypatch.setattr("ashrise.research._brave_web_search", _boom)
+
+    response = app_client.post(
+        "/agent/run",
+        headers=auth_headers,
+        json={"target_type": "project", "target_id": "procurement-licitaciones"},
+    )
+    assert response.status_code == 200
+    reason = response.json()["report"]["metadata"]["research_fallback_reason"]
+
+    assert "[REDACTED]" in reason
+    assert "super-secret-token" not in reason
+    assert "brave-real-key" not in reason
+    assert "sk-lf-local-secret" not in reason
