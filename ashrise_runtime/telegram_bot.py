@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 import os
 from pathlib import Path
@@ -224,6 +224,182 @@ def build_daily_summary(
     return "\n".join(lines)
 
 
+def _next_scheduled_date(today: date, recurrence: str | None) -> date | None:
+    if recurrence == "daily":
+        return today + timedelta(days=1)
+    if recurrence == "weekly":
+        return today + timedelta(days=7)
+    if recurrence == "monthly":
+        return today + timedelta(days=30)
+    return None
+
+
+def _candidate_queue_patch(
+    queue_item: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    today: date,
+    now: datetime,
+) -> tuple[dict[str, Any], str]:
+    verdict = result["report"].get("verdict") or "unknown"
+    metadata = result["report"].get("metadata") or {}
+    promotion = metadata.get("promotion_signal") or {}
+
+    patch: dict[str, Any] = {
+        "last_run_at": now.isoformat(),
+        "last_report_id": result["report"]["id"],
+        "notes": f"{today.isoformat()} {verdict}: {result['summary']}",
+    }
+
+    if verdict in {"kill", "park"}:
+        patch["status"] = "done"
+        return patch, "done"
+
+    if verdict == "advance" and promotion.get("ready"):
+        patch["status"] = "done"
+        patch["notes"] += " | ready-for-promotion"
+        return patch, "ready"
+
+    patch["status"] = "pending"
+    patch["scheduled_for"] = (today + timedelta(days=7)).isoformat()
+    patch["recurrence"] = "weekly"
+    return patch, "requeued"
+
+
+def _project_queue_patch(
+    queue_item: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    today: date,
+    now: datetime,
+) -> tuple[dict[str, Any], str]:
+    patch: dict[str, Any] = {
+        "last_run_at": now.isoformat(),
+        "last_report_id": result["report"]["id"],
+        "notes": f"{today.isoformat()} {result['report'].get('verdict')}: {result['summary']}",
+    }
+    next_date = _next_scheduled_date(today, queue_item.get("recurrence"))
+    if next_date is None:
+        patch["status"] = "done"
+        return patch, "done"
+
+    patch["status"] = "pending"
+    patch["scheduled_for"] = next_date.isoformat()
+    return patch, "requeued"
+
+
+def run_active_daily_cycle(
+    api: AshriseApiClient,
+    *,
+    today: date | None = None,
+) -> dict[str, Any]:
+    today = today or date.today()
+    now = datetime.now(UTC)
+    queue_items = api.get_research_queue(due="today")
+    verdict_counts: Counter[str] = Counter()
+    results: list[dict[str, Any]] = []
+    promotion_ready: list[dict[str, Any]] = []
+    failures = 0
+
+    for queue_item in queue_items:
+        target_type = "project" if queue_item.get("project_id") else "candidate"
+        target_id = queue_item.get("project_id") or str(queue_item.get("candidate_id"))
+
+        try:
+            api.patch_research_queue(str(queue_item["id"]), {"status": "in-progress"})
+            result = api.run_agent({"target_type": target_type, "target_id": target_id})
+            verdict = result["report"].get("verdict") or "unknown"
+            verdict_counts[f"{target_type}:{verdict}"] += 1
+
+            if target_type == "candidate":
+                patch, action = _candidate_queue_patch(queue_item, result, today=today, now=now)
+                promotion = (result["report"].get("metadata") or {}).get("promotion_signal") or {}
+                if promotion.get("ready"):
+                    promotion_ready.append(
+                        {
+                            "candidate": target_id,
+                            "report_id": result["report"]["id"],
+                            "consecutive_advances": promotion.get("consecutive_advances"),
+                        }
+                    )
+            else:
+                patch, action = _project_queue_patch(queue_item, result, today=today, now=now)
+
+            api.patch_research_queue(str(queue_item["id"]), patch)
+            results.append(
+                {
+                    "queue_id": str(queue_item["id"]),
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "verdict": verdict,
+                    "action": action,
+                    "summary": result["summary"],
+                    "report_id": result["report"]["id"],
+                }
+            )
+        except Exception as exc:
+            failures += 1
+            api.patch_research_queue(
+                str(queue_item["id"]),
+                {
+                    "status": "pending",
+                    "notes": f"{today.isoformat()} failed: {exc}",
+                },
+            )
+            results.append(
+                {
+                    "queue_id": str(queue_item["id"]),
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "today": today.isoformat(),
+        "queue_size": len(queue_items),
+        "processed": len([item for item in results if item.get("status") != "failed"]),
+        "failures": failures,
+        "verdict_counts": dict(sorted(verdict_counts.items())),
+        "promotion_ready": promotion_ready,
+        "results": results,
+    }
+
+
+def build_active_daily_summary(result: dict[str, Any]) -> str:
+    lines = [
+        f"Ashrise active daily reminder ({result['today']})",
+        f"- queue items due today: {result['queue_size']}",
+        f"- processed: {result['processed']}",
+        f"- failures: {result['failures']}",
+    ]
+
+    if result["verdict_counts"]:
+        lines.append("Verdicts:")
+        for key, count in result["verdict_counts"].items():
+            lines.append(f"- {key} = {count}")
+
+    if result["promotion_ready"]:
+        lines.append("Ready to promote:")
+        for item in result["promotion_ready"]:
+            lines.append(
+                f"- {item['candidate']} ({item['consecutive_advances']} advances). "
+                f"Approve with POST /candidates/{item['candidate']}/promote"
+            )
+
+    for item in result["results"]:
+        if item.get("status") == "failed":
+            lines.append(f"- failed {item['target_type']} {item['target_id']}: {item['error']}")
+            continue
+        lines.append(
+            f"- {item['target_type']} {item['target_id']} -> {item['verdict']} "
+            f"({item['action']})"
+        )
+
+    return "\n".join(lines)
+
+
 def handle_command(
     api: AshriseApiClient,
     text: str,
@@ -334,6 +510,12 @@ def run_polling(cwd: Path | None = None, poll_timeout: int = 30):
 def send_daily_summary(chat_id: str | int):
     token = require_telegram_token()
     with AshriseApiClient() as api, TelegramBotClient(token) as telegram:
+        telegram.send_message(chat_id, build_active_daily_summary(run_active_daily_cycle(api)))
+
+
+def send_passive_daily_summary(chat_id: str | int):
+    token = require_telegram_token()
+    with AshriseApiClient() as api, TelegramBotClient(token) as telegram:
         telegram.send_message(chat_id, build_daily_summary(api))
 
 
@@ -344,8 +526,11 @@ def build_parser() -> argparse.ArgumentParser:
     polling = subparsers.add_parser("polling", help="Run the Telegram bot in polling mode")
     polling.add_argument("--poll-timeout", type=int, default=30)
 
-    reminder = subparsers.add_parser("reminder-once", help="Send the passive daily reminder once")
+    reminder = subparsers.add_parser("reminder-once", help="Run the active daily reminder once")
     reminder.add_argument("--chat-id")
+
+    passive = subparsers.add_parser("reminder-passive-once", help="Send the passive daily reminder once")
+    passive.add_argument("--chat-id")
 
     return parser
 
@@ -364,6 +549,12 @@ def main(argv: list[str] | None = None) -> int:
             if not chat_id:
                 raise RuntimeError("Missing TELEGRAM_CHAT_ID or --chat-id for reminder-once")
             send_daily_summary(chat_id)
+            return 0
+        if args.command == "reminder-passive-once":
+            chat_id = args.chat_id or default_chat_id()
+            if not chat_id:
+                raise RuntimeError("Missing TELEGRAM_CHAT_ID or --chat-id for reminder-passive-once")
+            send_passive_daily_summary(chat_id)
             return 0
     except KeyboardInterrupt:
         print("Stopped.", file=sys.stderr)

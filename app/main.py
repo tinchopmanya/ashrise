@@ -12,7 +12,7 @@ from app.routers.research import router as research_router
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.app_name, version="0.4.0")
+    app = FastAPI(title=settings.app_name, version="0.5.0")
 
     @app.exception_handler(PsycopgError)
     def handle_psycopg_error(_, exc: PsycopgError):

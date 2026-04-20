@@ -34,6 +34,9 @@ def app_client():
     recreate_test_database()
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     os.environ["ASHRISE_TOKEN"] = TEST_TOKEN
+    os.environ.pop("LANGFUSE_BASE_URL", None)
+    os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
+    os.environ.pop("LANGFUSE_SECRET_KEY", None)
 
     from app.config import get_settings
     from app.main import create_app

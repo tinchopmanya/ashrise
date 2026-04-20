@@ -142,5 +142,14 @@ class AshriseApiClient:
         params = {"due": due} if due else None
         return self.request_json("GET", "/research-queue", params=params)
 
+    def patch_research_queue(self, queue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request_json("PATCH", f"/research-queue/{queue_id}", json=payload)
+
+    def patch_candidate(self, candidate_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request_json("PATCH", f"/candidates/{candidate_ref}", json=payload)
+
+    def promote_candidate(self, candidate_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request_json("POST", f"/candidates/{candidate_ref}/promote", json=payload)
+
     def run_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request_json("POST", "/agent/run", json=payload)

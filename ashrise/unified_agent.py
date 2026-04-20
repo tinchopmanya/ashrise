@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -9,12 +9,15 @@ from uuid import UUID
 from fastapi import HTTPException
 import psycopg
 
+from ashrise.langfuse_support import ResolvedPrompt, get_langfuse_client, record_agent_trace, resolve_prompt
 from ashrise.research import assess_stack, check_ai_encroachment, find_competitors, web_search
 from app.db import fetch_all, fetch_one, get_candidate_by_ref, insert_row, update_row, upsert_project_state
 
 
-PROJECT_PROMPT_REF = "repo-local:prompts/auditor-project@v0"
-CANDIDATE_PROMPT_REF = "repo-local:prompts/investigator-candidate@v0"
+PROJECT_PROMPT_NAME = "auditor-project@v1"
+CANDIDATE_PROMPT_NAME = "investigator-candidate@v1"
+PROJECT_PROMPT_REF = f"langfuse:{PROJECT_PROMPT_NAME}"
+CANDIDATE_PROMPT_REF = f"langfuse:{CANDIDATE_PROMPT_NAME}"
 INITIAL_PRIORITY_PROJECTS = [
     "procurement-licitaciones",
     "neytiri",
@@ -48,6 +51,14 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
     return value
+
+
+def _float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value)
 
 
 def _tech_list_from_target(*parts: Any) -> list[str]:
@@ -317,6 +328,24 @@ def _candidate_topic(candidate: dict[str, Any]) -> str:
     )
 
 
+def _resolve_agent_prompt(prompt_ref: str | None, default_name: str):
+    if prompt_ref and prompt_ref.startswith("langfuse:"):
+        prompt_name = prompt_ref.split(":", 1)[1]
+    elif prompt_ref:
+        return None, ResolvedPrompt(
+            name=prompt_ref,
+            prompt_ref=prompt_ref,
+            text="",
+            source="custom",
+            is_fallback=True,
+        )
+    else:
+        prompt_name = default_name
+
+    client = get_langfuse_client()
+    return client, resolve_prompt(prompt_name, client=client)
+
+
 def _create_run(
     conn: psycopg.Connection,
     *,
@@ -326,7 +355,16 @@ def _create_run(
     prompt_ref: str,
     target_type: str,
     target_id: str,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    metadata = {
+        "target_type": target_type,
+        "target_id": target_id,
+        "source": "api:/agent/run",
+    }
+    if metadata_extra:
+        metadata.update(metadata_extra)
+
     return insert_row(
         conn,
         "runs",
@@ -336,33 +374,41 @@ def _create_run(
             "mode": mode,
             "prompt_ref": prompt_ref,
             "status": "running",
-            "metadata": {"target_type": target_type, "target_id": target_id, "source": "api:/agent/run"},
+            "metadata": metadata,
         },
     )
 
 
 def _complete_run(
     conn: psycopg.Connection,
-    run_id: UUID,
+    run: dict[str, Any],
     *,
     summary: str,
     files_touched: list[str],
     diff_stats: dict[str, Any],
+    langfuse_trace_id: str | None = None,
+    metadata_updates: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    run = update_row(
+    metadata = dict(run.get("metadata") or {})
+    if metadata_updates:
+        metadata.update(metadata_updates)
+
+    completed_run = update_row(
         conn,
         "runs",
-        {"id": run_id},
+        {"id": run["id"]},
         {
             "status": "completed",
             "summary": summary,
             "files_touched": files_touched,
             "diff_stats": diff_stats,
             "next_step_proposed": "Review generated report and decide the next concrete action.",
+            "langfuse_trace_id": langfuse_trace_id,
+            "metadata": metadata,
         },
     )
-    assert run is not None
-    return run
+    assert completed_run is not None
+    return completed_run
 
 
 def _fail_run(conn: psycopg.Connection, run_id: UUID, error_text: str):
@@ -380,21 +426,134 @@ def _fail_run(conn: psycopg.Connection, run_id: UUID, error_text: str):
     )
 
 
+def _report_prompt_metadata(prompt, trace_id: str | None, trace_error: str | None) -> dict[str, Any]:
+    if trace_id:
+        langfuse_status = "traced"
+    elif trace_error == "disabled":
+        langfuse_status = "disabled"
+    elif trace_error:
+        langfuse_status = "trace-error"
+    else:
+        langfuse_status = "disabled"
+
+    return {
+        "prompt_ref": prompt.prompt_ref,
+        "prompt_source": prompt.source,
+        "prompt_fallback": prompt.is_fallback,
+        "langfuse_trace_id": trace_id,
+        "langfuse_status": langfuse_status,
+        "langfuse_error": trace_error if trace_error and trace_error != "disabled" else None,
+    }
+
+
+def _update_project_state_after_run(
+    conn: psycopg.Connection,
+    project_id: str,
+    *,
+    last_run_id: UUID,
+    last_audit_id: UUID | None = None,
+):
+    payload: dict[str, Any] = {"last_run_id": last_run_id}
+    if last_audit_id is not None:
+        payload["last_audit_id"] = last_audit_id
+    upsert_project_state(conn, project_id, payload)
+
+
+def _candidate_status_for_verdict(verdict: str) -> str:
+    if verdict == "advance":
+        return "promising"
+    if verdict == "park":
+        return "paused"
+    if verdict == "kill":
+        return "killed"
+    return "investigating"
+
+
+def _candidate_promotion_signal(conn: psycopg.Connection, candidate_id: UUID) -> dict[str, Any]:
+    rows = fetch_all(
+        conn,
+        (
+            "SELECT id, verdict, confidence, created_at "
+            "FROM candidate_research_reports "
+            "WHERE candidate_id = %s "
+            "ORDER BY created_at DESC "
+            "LIMIT 3"
+        ),
+        (candidate_id,),
+    )
+
+    consecutive_advances = 0
+    for row in rows:
+        if row.get("verdict") == "advance" and _float(row.get("confidence")) > 0.7:
+            consecutive_advances += 1
+            continue
+        break
+
+    ready = len(rows) >= 3 and consecutive_advances >= 3
+    latest = rows[0] if rows else None
+    return {
+        "consecutive_advances": consecutive_advances,
+        "ready": ready,
+        "latest_report_id": str(latest["id"]) if latest else None,
+        "latest_verdict": latest.get("verdict") if latest else None,
+        "latest_confidence": _float(latest.get("confidence")) if latest else None,
+        "ready_at": datetime.now(UTC).isoformat() if ready else None,
+    }
+
+
+def _update_candidate_after_report(
+    conn: psycopg.Connection,
+    candidate: dict[str, Any],
+    report: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    promotion_signal = _candidate_promotion_signal(conn, candidate["id"])
+    metadata = dict(candidate.get("metadata") or {})
+    metadata["promotion"] = promotion_signal
+    metadata["last_research"] = {
+        "report_id": str(report["id"]),
+        "verdict": report["verdict"],
+        "confidence": _float(report.get("confidence")),
+    }
+
+    status = _candidate_status_for_verdict(report["verdict"])
+    updated = update_row(
+        conn,
+        "vertical_candidates",
+        {"id": candidate["id"]},
+        {
+            "last_research_id": report["id"],
+            "status": status,
+            "kill_verdict": {
+                "verdict": report["verdict"],
+                "confidence": _float(report.get("confidence")),
+                "report_id": str(report["id"]),
+            },
+            "metadata": metadata,
+        },
+    )
+    assert updated is not None
+    return updated, promotion_signal
+
+
 def _project_report(conn: psycopg.Connection, project_id: str, prompt_ref: str | None = None) -> AgentExecutionResult:
     project = fetch_one(conn, "SELECT * FROM projects WHERE id = %s", (project_id,))
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
 
     state = fetch_one(conn, "SELECT * FROM project_state WHERE project_id = %s", (project_id,))
-    prompt_ref = prompt_ref or PROJECT_PROMPT_REF
+    langfuse_client, prompt = _resolve_agent_prompt(prompt_ref, PROJECT_PROMPT_NAME)
     run = _create_run(
         conn,
         project_id=project_id,
         agent="auditor",
         mode="audit",
-        prompt_ref=prompt_ref,
+        prompt_ref=prompt.prompt_ref,
         target_type="project",
         target_id=project_id,
+        metadata_extra={
+            "prompt_source": prompt.source,
+            "prompt_fallback": prompt.is_fallback,
+        },
     )
 
     try:
@@ -418,30 +577,58 @@ def _project_report(conn: psycopg.Connection, project_id: str, prompt_ref: str |
                 "findings": findings,
                 "proposed_changes": proposed_changes,
                 "evidence_refs": _evidence_refs(search_results),
-                "roadmap_ref": "ROADMAP.md#sprint-4",
+                "roadmap_ref": "ROADMAP.md#sprint-5",
                 "state_snapshot": _json_safe({"project": project, "state": state}),
                 "metadata": {
-                    "prompt_ref": prompt_ref,
+                    "prompt_ref": prompt.prompt_ref,
+                    "prompt_source": prompt.source,
+                    "prompt_fallback": prompt.is_fallback,
                     "research_provider": search_results[0]["provider"] if search_results else "stub",
                     "ai_risk": ai_risk.get("risk_level"),
                     "competitor_count": len(competitors),
                 },
             },
         )
-        upsert_project_state(conn, project_id, {"last_audit_id": report["id"]})
+
+        trace_id, trace_error = record_agent_trace(
+            langfuse_client,
+            prompt,
+            run_id=str(run["id"]),
+            target_type="project",
+            target_id=project_id,
+            input_payload=_json_safe({"project": project, "state": state, "topic": topic}),
+            output_payload=_json_safe({"summary": summary, "verdict": verdict, "report_id": report["id"]}),
+            metadata={
+                "project_id": project_id,
+                "report_type": "audit_report",
+            },
+        )
+        report_metadata = dict(report.get("metadata") or {})
+        report_metadata.update(_report_prompt_metadata(prompt, trace_id, trace_error))
+        updated_report = update_row(
+            conn,
+            "audit_reports",
+            {"id": report["id"]},
+            {"metadata": report_metadata},
+        )
+        assert updated_report is not None
+        _update_project_state_after_run(conn, project_id, last_run_id=run["id"], last_audit_id=updated_report["id"])
+
         completed_run = _complete_run(
             conn,
-            run["id"],
+            run,
             summary=summary,
             files_touched=["prompts/auditor-project.md"],
             diff_stats={"added": 0, "removed": 0, "files": 0},
+            langfuse_trace_id=trace_id,
+            metadata_updates=_report_prompt_metadata(prompt, trace_id, trace_error),
         )
         return AgentExecutionResult(
             target_type="project",
             target_id=project_id,
             run=completed_run,
             report_type="audit_report",
-            report=report,
+            report=updated_report,
             summary=summary,
         )
     except Exception as exc:
@@ -451,15 +638,20 @@ def _project_report(conn: psycopg.Connection, project_id: str, prompt_ref: str |
 
 def _candidate_report(conn: psycopg.Connection, candidate_ref: str, prompt_ref: str | None = None) -> AgentExecutionResult:
     candidate = get_candidate_by_ref(conn, candidate_ref)
-    prompt_ref = prompt_ref or CANDIDATE_PROMPT_REF
+    langfuse_client, prompt = _resolve_agent_prompt(prompt_ref, CANDIDATE_PROMPT_NAME)
     run = _create_run(
         conn,
         project_id=candidate.get("parent_group") or "ashrise",
         agent="investigator",
         mode="investigate",
-        prompt_ref=prompt_ref,
+        prompt_ref=prompt.prompt_ref,
         target_type="candidate",
         target_id=candidate_ref,
+        metadata_extra={
+            "candidate_id": str(candidate["id"]),
+            "prompt_source": prompt.source,
+            "prompt_fallback": prompt.is_fallback,
+        },
     )
 
     try:
@@ -511,36 +703,76 @@ def _candidate_report(conn: psycopg.Connection, candidate_ref: str, prompt_ref: 
                 "proposed_next_steps": next_steps,
                 "evidence_refs": _evidence_refs(search_results),
                 "kill_template_id": template["id"] if template else None,
-                "prompt_ref": prompt_ref,
+                "prompt_ref": prompt.prompt_ref,
                 "candidate_snapshot": _json_safe(candidate),
                 "metadata": {
-                    "prompt_ref": prompt_ref,
+                    "prompt_ref": prompt.prompt_ref,
+                    "prompt_source": prompt.source,
+                    "prompt_fallback": prompt.is_fallback,
+                    "kill_template_prompt_ref": template.get("prompt_ref") if template else None,
                     "research_provider": search_results[0]["provider"] if search_results else "stub",
                     "criteria_count": len(criteria),
                     "hard_hits": len([item for item in kill_hits if item.get("type") == "hard"]),
                 },
             },
         )
-        updated_candidate = update_row(
-            conn,
-            "vertical_candidates",
-            {"id": candidate["id"]},
-            {"last_research_id": report["id"]},
+
+        trace_id, trace_error = record_agent_trace(
+            langfuse_client,
+            prompt,
+            run_id=str(run["id"]),
+            target_type="candidate",
+            target_id=candidate_ref,
+            input_payload=_json_safe({"candidate": candidate, "topic": topic, "kill_template": template}),
+            output_payload=_json_safe({"summary": summary, "verdict": verdict, "report_id": report["id"]}),
+            metadata={
+                "candidate_id": str(candidate["id"]),
+                "candidate_slug": candidate["slug"],
+                "report_type": "candidate_research_report",
+            },
         )
-        assert updated_candidate is not None
+
+        report_metadata = dict(report.get("metadata") or {})
+        report_metadata.update(_report_prompt_metadata(prompt, trace_id, trace_error))
+        updated_report = update_row(
+            conn,
+            "candidate_research_reports",
+            {"id": report["id"]},
+            {"metadata": report_metadata},
+        )
+        assert updated_report is not None
+
+        updated_candidate, promotion_signal = _update_candidate_after_report(conn, candidate, updated_report)
+        report_metadata = dict(updated_report.get("metadata") or {})
+        report_metadata["promotion_signal"] = promotion_signal
+        updated_report = update_row(
+            conn,
+            "candidate_research_reports",
+            {"id": updated_report["id"]},
+            {"metadata": report_metadata},
+        )
+        assert updated_report is not None
+
         completed_run = _complete_run(
             conn,
-            run["id"],
+            run,
             summary=summary,
             files_touched=["prompts/investigator-candidate.md"],
             diff_stats={"added": 0, "removed": 0, "files": 0},
+            langfuse_trace_id=trace_id,
+            metadata_updates={
+                **_report_prompt_metadata(prompt, trace_id, trace_error),
+                "promotion_ready": promotion_signal["ready"],
+                "consecutive_advances": promotion_signal["consecutive_advances"],
+                "candidate_status": updated_candidate["status"],
+            },
         )
         return AgentExecutionResult(
             target_type="candidate",
             target_id=candidate_ref,
             run=completed_run,
             report_type="candidate_research_report",
-            report=report,
+            report=updated_report,
             summary=summary,
         )
     except Exception as exc:

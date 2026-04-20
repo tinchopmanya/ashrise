@@ -1,6 +1,6 @@
 # Ashrise
 
-Sprint 4 deja el repo-local operativo para Ashrise Core: Postgres 15, schema, API minima FastAPI con auth Bearer, runtime tooling (`ashrise-hook`, wrapper Codex, bot Telegram), agente unificado auditor+investigador, `POST /agent/run` y job semanal cron-friendly. Langfuse sigue solo como placeholder de config; los prompts viven repo-locales temporalmente en `prompts/`.
+Sprint 5 deja el repo-local operativo para Ashrise Core con Postgres, API FastAPI, runtime tooling, agente unificado, `POST /agent/run`, Langfuse self-hosted local, promoción manual de candidatas y reminder diario activo. `ashrise.research` sigue usando fallback `stub` controlado hasta que entre un provider real.
 
 ## Requisitos
 
@@ -9,33 +9,22 @@ Sprint 4 deja el repo-local operativo para Ashrise Core: Postgres 15, schema, AP
 
 ## Windows
 
-En Windows puede pasar que `make` este instalado via MSYS2 pero no aparezca en PowerShell o Codex, porque `C:\msys64\usr\bin` no siempre queda en el `PATH` de esas sesiones. Ademas, algunas instalaciones de PowerShell bloquean `.ps1` por `ExecutionPolicy`.
+En Windows puede pasar que `make` esté instalado vía MSYS2 pero no aparezca en PowerShell o Codex, porque `C:\msys64\usr\bin` no siempre queda en el `PATH` de esas sesiones. Además, algunas instalaciones de PowerShell bloquean `.ps1` por `ExecutionPolicy`.
 
-El `Makefile` ya envuelve `docker compose` con `MSYS_NO_PATHCONV=1` y `MSYS2_ARG_CONV_EXCL="*"`, asi que no hace falta exportar esas variables a mano para `make seed` o `make verify`.
+El `Makefile` ya envuelve `docker compose` con `MSYS_NO_PATHCONV=1` y `MSYS2_ARG_CONV_EXCL="*"`, así que no hace falta exportar esas variables a mano.
 
 Opciones:
 
-- usar MSYS2 directamente si preferis esa terminal
-- si PowerShell bloquea scripts, correr `Set-ExecutionPolicy -Scope Process Bypass` en esa sesion; no requiere admin y no cambia la policy global
-- correr `.\scripts\windows\ensure-make.ps1 -SessionOnly` para agregar `C:\msys64\usr\bin` solo al `PATH` de la sesion actual
-- correr `powershell -ExecutionPolicy Bypass -File .\scripts\windows\ensure-make.ps1 -PersistUserPath` para agregar `C:\msys64\usr\bin` al `PATH` de usuario sin duplicarlo
+- usar MSYS2 directamente si preferís esa terminal
+- si PowerShell bloquea scripts, correr `Set-ExecutionPolicy -Scope Process Bypass` en esa sesión
+- correr `.\scripts\windows\ensure-make.ps1 -SessionOnly`
+- correr `powershell -ExecutionPolicy Bypass -File .\scripts\windows\ensure-make.ps1 -PersistUserPath`
 
-Despues de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell o Codex para que nuevas sesiones vean el cambio.
-
-## Flujo repo-local
-
-- `make up`: levanta `db` y `api`
-- `make seed`: recrea la base `ashrise` y aplica `sql/001_init.sql`
-- `make verify`: valida conteos y `project_state_code`
-- `make test`: corre `pytest` dentro del contenedor `api`
-- `make psql`: abre `psql` contra la base `ashrise`
-- `make down`: baja los servicios
-- `make logs`: sigue logs de `db`
-- `make logs-api`: sigue logs de `api`
+Después de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell o Codex.
 
 ## Variables de entorno
 
-`.env.example` documenta las variables compartidas de Ashrise y Langfuse:
+`.env.example` deja un set repo-local utilizable:
 
 - `ASHRISE_BASE_URL`
 - `ASHRISE_TOKEN`
@@ -45,78 +34,122 @@ Despues de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShell
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Para el flujo local de Sprint 2, Docker Compose usa `ASHRISE_TOKEN=dev-token` si no hay override en el entorno.
+Para usar Ashrise/Langfuse fuera de la máquina local, cambiá las URLs por el hostname Headscale correspondiente.
 
-## API local
+## Flujo repo-local
 
-Con el stack levantado, la API queda en `http://localhost:8080`.
+- `make up`: levanta `db` y `api`
+- `make seed`: recrea la base `ashrise` y aplica `sql/001_init.sql`
+- `make verify`: valida conteos y `project_state_code`
+- `make test`: corre `pytest` dentro del contenedor `api`
+- `make psql`: abre `psql` contra la base `ashrise`
+- `make down`: baja todos los servicios
+- `make logs`: sigue logs de `db`
+- `make logs-api`: sigue logs de `api`
 
-Ejemplo:
-
-```powershell
-curl -H "Authorization: Bearer dev-token" http://localhost:8080/health
-curl -H "Authorization: Bearer dev-token" http://localhost:8080/projects
-curl -H "Authorization: Bearer dev-token" http://localhost:8080/candidates
-```
-
-## Flujo recomendado
+Flujo base recomendado:
 
 ```powershell
 make up
 make seed
 make verify
 make test
-make psql
 ```
 
-## Alcance actual
+## Langfuse local
 
-- Postgres 15 local con volumen persistente
-- `sql/001_init.sql` aplicado via `make seed`
-- verificacion repo-local via `sql/verify_sanity.sql`
-- API FastAPI minima con auth Bearer para operacion e investigacion
-- tests happy path con `pytest`
-- `ashrise-hook` para abrir/cerrar runs contra la API
-- wrapper repo-local para Codex
-- bot de Telegram por polling
-- recordatorio diario pasivo via `reminder-once`
-- agente unificado para auditoria de proyectos e investigacion de candidatas
-- `POST /agent/run` y job semanal repo-local
+Langfuse corre como stack opcional en el mismo compose. No hace falta para usar Ashrise Core, pero sí para Sprint 5 completo con prompts sincronizados y trazabilidad.
 
-## Hook de sesiones
+Levantar Langfuse local:
 
-Defini estas variables antes de usar el hook contra la API:
+```powershell
+make langfuse-up
+make langfuse-sync-prompts
+```
+
+Servicios locales:
+
+- Ashrise API: `http://localhost:8080`
+- Langfuse UI/API: `http://localhost:3000`
+
+Credenciales de desarrollo del stack local:
+
+- usuario: `admin@ashrise.local`
+- password: `ashrise-local-dev`
+- public key: `pk-lf-local`
+- secret key: `sk-lf-local`
+
+Si usás scripts fuera de Docker, exportá:
 
 ```powershell
 $env:ASHRISE_BASE_URL = "http://localhost:8080"
 $env:ASHRISE_TOKEN = "dev-token"
+$env:LANGFUSE_BASE_URL = "http://localhost:3000"
+$env:LANGFUSE_PUBLIC_KEY = "pk-lf-local"
+$env:LANGFUSE_SECRET_KEY = "sk-lf-local"
 ```
 
-Abrir una sesion:
+## API local
+
+Con el stack levantado, la API queda en `http://localhost:8080`.
+
+Health:
 
 ```powershell
-python .\scripts\ashrise-hook.py session-start --project ashrise
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/health
 ```
 
-Cerrar una sesion usando un transcript:
+Proyecto y candidata:
 
 ```powershell
-python .\scripts\ashrise-hook.py session-stop --project ashrise --transcript .\.ashrise\transcripts\ashrise-YYYYMMDD-HHMMSS.log
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/projects
+curl -H "Authorization: Bearer dev-token" http://localhost:8080/candidates
 ```
 
-Si no queres usar archivo, `session-stop` tambien acepta `--text` o stdin.
-
-## Wrapper de Codex
-
-El wrapper abre el run, ejecuta un comando, guarda transcript en `.ashrise/transcripts/` y llama `session-stop` al final.
-
-Ejemplo generico:
+Agente con trazabilidad:
 
 ```powershell
-python .\scripts\run_codex_task.py --project ashrise -- codex exec "Implement something"
+curl -H "Authorization: Bearer dev-token" `
+  -H "Content-Type: application/json" `
+  -X POST `
+  -d '{"target_type":"project","target_id":"procurement-licitaciones"}' `
+  http://localhost:8080/agent/run
 ```
 
-Si tu flujo de Codex consume prompt por stdin, podes pasar contexto + tarea con `--prompt-file` o `--prompt-text`.
+La respuesta del run incluye:
+
+- `prompt_ref`
+- `langfuse_trace_id`
+- metadata con `prompt_source`, `langfuse_status` y target asociado
+
+Si Langfuse no está disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`.
+
+## Promoción de candidatas
+
+El agente marca señal de promoción cuando una candidata acumula 3 reportes consecutivos con:
+
+- `verdict='advance'`
+- `confidence > 0.7`
+
+Esa señal queda en `vertical_candidates.metadata.promotion`.
+
+La aprobación sigue siendo manual y explícita. Para promover:
+
+```powershell
+curl -H "Authorization: Bearer dev-token" `
+  -H "Content-Type: application/json" `
+  -X POST `
+  -d '{"project_id":"mi-nuevo-proyecto","name":"Mi Nuevo Proyecto","host_machine":"i7-main"}' `
+  http://localhost:8080/candidates/mi-candidata/promote
+```
+
+La promoción hace esto:
+
+- crea `projects`
+- setea `projects.promoted_from_candidate_id`
+- marca la candidata como `promoted`
+- setea `promoted_to_project_id`
+- crea `project_state` inicial para el proyecto nuevo
 
 ## Bot de Telegram
 
@@ -143,14 +176,23 @@ Comandos disponibles:
 - `/idea <texto>`
 - `/candidatas [categoria]`
 - `/candidata <slug>`
-- `/auditar <proyecto|candidata>` dispara `POST /agent/run`
+- `/auditar <proyecto|candidata>`
 
-## Recordatorio diario pasivo
+## Reminder diario activo
 
-`reminder-once` es cron-friendly. Cuenta:
+`reminder-once` ahora ejecuta el flujo activo de Sprint 5:
 
-- items en `research_queue` con `due <= today`
-- proyectos activos sin audit en los ultimos 7 dias
+1. lee `research_queue` con `scheduled_for <= today`
+2. corre `POST /agent/run` para cada item
+3. actualiza la queue
+4. manda resumen por Telegram con veredictos y señales de promoción
+
+Reglas actuales:
+
+- `kill` o `park` → `research_queue.status='done'`
+- `iterate` o `split` → reencola a 7 días
+- `advance` → reencola a 7 días, salvo que quede `ready` para promoción; en ese caso sale de la queue
+- proyectos con `recurrence` semanal/mensual se reprograman según esa recurrencia
 
 Ejemplo:
 
@@ -159,54 +201,55 @@ $env:TELEGRAM_CHAT_ID = "123456"
 python .\scripts\telegram_bot.py reminder-once
 ```
 
-La idea es programarlo a las 9am con Task Scheduler, cron o un scheduler externo simple.
-
-## Agente unificado
-
-`POST /agent/run` dispara el agente unificado. Usa `runs.agent='auditor'` para `project` y `runs.agent='investigator'` para `candidate`, persiste el reporte en las tablas existentes y actualiza `last_audit_id` o `last_research_id`.
-
-Ejemplos:
+Si querés el resumen pasivo viejo:
 
 ```powershell
-curl -H "Authorization: Bearer dev-token" `
-  -H "Content-Type: application/json" `
-  -X POST `
-  -d '{"target_type":"project","target_id":"procurement-licitaciones"}' `
-  http://localhost:8080/agent/run
+python .\scripts\telegram_bot.py reminder-passive-once
 ```
+
+También podés correr el ciclo activo sin Telegram, solo contra la API:
 
 ```powershell
-curl -H "Authorization: Bearer dev-token" `
-  -H "Content-Type: application/json" `
-  -X POST `
-  -d '{"target_type":"candidate","target_id":"mi-candidata"}' `
-  http://localhost:8080/agent/run
+docker compose exec --interactive=false -T `
+  -e ASHRISE_BASE_URL=http://localhost:8080 `
+  -e ASHRISE_TOKEN=dev-token `
+  api python -c "from ashrise_runtime.api_client import AshriseApiClient; from ashrise_runtime.telegram_bot import build_active_daily_summary, run_active_daily_cycle; api = AshriseApiClient(); result = run_active_daily_cycle(api); print(build_active_daily_summary(result)); api.close()"
 ```
 
-El research externo todavia no esta integrado a un proveedor real. `ashrise.research` deja interfaz estable y usa fallback controlado `provider=stub`, para no bloquear el sprint ni romper la API si faltan credenciales.
+## Hook y wrapper
 
-## Job semanal
-
-El job semanal corre una vez, usando la API existente. Prioriza primero:
-
-1. `procurement-licitaciones`
-2. `neytiri`
-3. `osla-small-qw`
-4. `procurement-core`
-5. `osla-medium-long`
-
-Luego suma proyectos activos y cualquier item `research_queue.status='pending'`.
+Hook de sesiones:
 
 ```powershell
-$env:ASHRISE_BASE_URL = "http://localhost:8080"
-$env:ASHRISE_TOKEN = "dev-token"
-python .\scripts\run_weekly_agent.py
+python .\scripts\ashrise-hook.py session-start --project ashrise
+python .\scripts\ashrise-hook.py session-stop --project ashrise --transcript .\.ashrise\transcripts\ashrise-YYYYMMDD-HHMMSS.log
 ```
 
-Es cron-friendly: la idea es programarlo semanalmente con Task Scheduler, cron o un scheduler externo simple.
+Wrapper de Codex:
 
-## Lo que sigue siendo Sprint 5+
+```powershell
+python .\scripts\run_codex_task.py --project ashrise -- codex exec "Implement something"
+```
 
-- Langfuse operativo mas alla de placeholders de config
-- migrar prompts criticos desde `prompts/` a Langfuse
-- recordatorio activo que dispare agentes automaticamente
+## Qué es real hoy y qué sigue en fallback
+
+Real en Sprint 5:
+
+- Langfuse self-hosted local en Compose
+- sync de prompts críticos a Langfuse
+- `prompt_ref` y `langfuse_trace_id` en runs/reports relevantes
+- promoción manual de candidatas listas
+- reminder diario activo con actualización de `research_queue`
+
+Fallback temporal:
+
+- `ashrise.research` sigue con provider `stub`
+- el agente sigue siendo heurístico; la observabilidad de Langfuse traza prompt, input, output y metadata, pero no hay provider LLM externo enchufado todavía
+
+## Qué queda fuera de Sprint 5
+
+- provider real de research web
+- Promptfoo / evals automáticas
+- Langfuse como fuente única de prompts fuera del repo
+- aprobación interactiva desde Telegram
+- automatización tipo Temporal o scheduler residente complejo

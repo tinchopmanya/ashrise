@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -184,3 +184,28 @@ class AgentRunRequest(StrictModel):
     target_type: Literal["project", "candidate"]
     target_id: str
     prompt_ref: str | None = None
+
+
+class CandidatePromotionRequest(StrictModel):
+    project_id: str
+    name: str | None = None
+    kind: Literal["core", "project", "vertical", "group"] = "project"
+    parent_id: str | None = None
+    repo_url: str | None = None
+    repo_path: str | None = None
+    worktree_path: str | None = None
+    host_machine: str | None = None
+    priority: int | None = None
+    importance: int | None = None
+    size_scope: int | None = None
+    progress_pct: int | None = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchQueuePatch(StrictModel):
+    scheduled_for: date | None = None
+    recurrence: Literal["once", "daily", "weekly", "monthly"] | None = None
+    status: Literal["pending", "in-progress", "done", "skipped"] | None = None
+    last_run_at: datetime | None = None
+    last_report_id: UUID | None = None
+    notes: str | None = None

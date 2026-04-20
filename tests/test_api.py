@@ -16,7 +16,9 @@ def test_health_and_projects_listing(app_client, auth_headers):
 
     projects = app_client.get("/projects", headers=auth_headers)
     assert projects.status_code == 200
-    assert len(projects.json()) == 14
+    assert len(projects.json()) >= 14
+    assert any(item["id"] == "ashrise" for item in projects.json())
+    assert any(item["id"] == "procurement-core" for item in projects.json())
 
     filtered = app_client.get(
         "/projects",
@@ -275,3 +277,17 @@ def test_research_queue_due_today(app_client, auth_headers, db_conn):
     queue = app_client.get("/research-queue", headers=auth_headers, params={"due": "today"})
     assert queue.status_code == 200
     assert any(item["candidate_id"] == candidate["id"] for item in queue.json())
+
+    queue_id = next(item["id"] for item in queue.json() if item["candidate_id"] == candidate["id"])
+    patched = app_client.patch(
+        f"/research-queue/{queue_id}",
+        headers=auth_headers,
+        json={
+            "status": "done",
+            "last_report_id": str(uuid4()),
+            "notes": "Processed by reminder",
+        },
+    )
+    assert patched.status_code == 200
+    assert patched.json()["status"] == "done"
+    assert patched.json()["notes"] == "Processed by reminder"

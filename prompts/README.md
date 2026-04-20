@@ -1,21 +1,21 @@
 # Ashrise Prompts
 
-Prompts estructurados para agentes de investigación y triage operativo. Todos terminan viviendo en **Langfuse** (Sprint 5 del roadmap); mientras tanto, quedan en git como fuente de verdad.
+Prompts estructurados para agentes de investigación y triage operativo. En Sprint 5 ya se sincronizan a **Langfuse** desde este repo; estos archivos siguen siendo el fallback repo-local y la referencia editable.
 
 ## Mapeo a Langfuse
 
-Cuando se migren a Langfuse, cada prompt se registra con su `prompt_ref` canónico:
+Cada prompt crítico se registra con su `prompt_ref` canónico:
 
 | Archivo | Langfuse ref | Categoría de candidata |
 |---|---|---|
 | `kill-vertical-small-quickwin.md` | `kill-vertical-small-qw@v1` | `small-quickwin` |
+| `kill-vertical-saas-v2.md` | `kill-vertical-medium-long@v1` | `medium-long` |
 | `kill-vertical-unicorn.md` | `kill-vertical-unicorn@v1` | `unicorn` |
-| `evaluate-learning-vertical.md` | `evaluate-learning-vertical@v1` | `learning` |
-| `evaluate-profound-ai-experiment.md` | `evaluate-profound-ai-experiment@v1` | `profound-ai` |
+| `evaluate-learning-vertical.md` | `kill-vertical-learning@v1` | `learning` |
+| `evaluate-profound-ai-experiment.md` | `kill-vertical-profound-ai@v1` | `profound-ai` |
+| `kill-vertical-core-sub.md` | `kill-vertical-core-sub@v1` | `core-sub-vertical` |
 | `continue-search-delta.md` | `continue-search-delta@v1` | cualquiera con status investigating/promising |
 | `daily-triage.md` | `daily-triage@v1` | N/A (operativo, no evalúa candidatas) |
-
-El prompt del método v3 completo (Medium-Long) está trackeado aparte en Langfuse como `kill-vertical-medium-long@v1`. Es el prompt maduro original que dio origen al roadmap OSLA v2.
 
 ## Lógica de aplicación
 
