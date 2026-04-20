@@ -10,7 +10,7 @@ from fastapi import HTTPException
 import psycopg
 
 from ashrise.langfuse_support import ResolvedPrompt, get_langfuse_client, record_agent_trace, resolve_prompt
-from ashrise.research import assess_stack, check_ai_encroachment, find_competitors, web_search
+from ashrise.research import assess_stack, check_ai_encroachment, find_competitors, research_trace_context, web_search
 from app.db import fetch_all, fetch_one, get_candidate_by_ref, insert_row, update_row, upsert_project_state
 
 
@@ -446,6 +446,15 @@ def _report_prompt_metadata(prompt, trace_id: str | None, trace_error: str | Non
     }
 
 
+def _research_report_metadata(search_results: list[dict[str, Any]]) -> dict[str, Any]:
+    first = search_results[0] if search_results else {}
+    return {
+        "research_provider": first.get("provider", "stub"),
+        "research_fallback": bool(first.get("fallback", first.get("provider", "stub") == "stub")),
+        "research_fallback_reason": first.get("fallback_reason"),
+    }
+
+
 def _update_project_state_after_run(
     conn: psycopg.Connection,
     project_id: str,
@@ -558,10 +567,16 @@ def _project_report(conn: psycopg.Connection, project_id: str, prompt_ref: str |
 
     try:
         topic = _project_topic(project, state)
-        search_results = web_search(topic)
-        competitors = find_competitors(topic)
-        ai_risk = check_ai_encroachment(topic)
-        stack_findings = assess_stack(_tech_list_from_target(project, state))
+        with research_trace_context(
+            run_id=str(run["id"]),
+            target_type="project",
+            target_id=project_id,
+            prompt_ref=prompt.prompt_ref,
+        ):
+            search_results = web_search(topic)
+            competitors = find_competitors(topic)
+            ai_risk = check_ai_encroachment(topic)
+            stack_findings = assess_stack(_tech_list_from_target(project, state))
         verdict, confidence, proposed_changes = _project_verdict(project, state, ai_risk, competitors)
         summary = _project_summary(project, verdict, competitors, ai_risk)
         findings = _project_findings(project, state, competitors, ai_risk, stack_findings)
@@ -583,9 +598,9 @@ def _project_report(conn: psycopg.Connection, project_id: str, prompt_ref: str |
                     "prompt_ref": prompt.prompt_ref,
                     "prompt_source": prompt.source,
                     "prompt_fallback": prompt.is_fallback,
-                    "research_provider": search_results[0]["provider"] if search_results else "stub",
                     "ai_risk": ai_risk.get("risk_level"),
                     "competitor_count": len(competitors),
+                    **_research_report_metadata(search_results),
                 },
             },
         )
@@ -670,10 +685,16 @@ def _candidate_report(conn: psycopg.Connection, candidate_ref: str, prompt_ref: 
             criteria = list(template.get("criteria") or [])
 
         topic = _candidate_topic(candidate)
-        search_results = web_search(topic)
-        competitors = find_competitors(topic)
-        ai_risk = check_ai_encroachment(topic)
-        stack_findings = assess_stack(_tech_list_from_target(candidate))
+        with research_trace_context(
+            run_id=str(run["id"]),
+            target_type="candidate",
+            target_id=candidate_ref,
+            prompt_ref=prompt.prompt_ref,
+        ):
+            search_results = web_search(topic)
+            competitors = find_competitors(topic)
+            ai_risk = check_ai_encroachment(topic)
+            stack_findings = assess_stack(_tech_list_from_target(candidate))
         kill_hits = _evaluate_kill_criteria(
             criteria,
             competitors=competitors,
@@ -710,9 +731,9 @@ def _candidate_report(conn: psycopg.Connection, candidate_ref: str, prompt_ref: 
                     "prompt_source": prompt.source,
                     "prompt_fallback": prompt.is_fallback,
                     "kill_template_prompt_ref": template.get("prompt_ref") if template else None,
-                    "research_provider": search_results[0]["provider"] if search_results else "stub",
                     "criteria_count": len(criteria),
                     "hard_hits": len([item for item in kill_hits if item.get("type") == "hard"]),
+                    **_research_report_metadata(search_results),
                 },
             },
         )

@@ -243,3 +243,48 @@ def record_agent_trace(
         return trace_id, None
     except Exception as exc:  # pragma: no cover - network/unavailable integration path
         return None, str(exc)
+
+
+def record_research_trace(
+    client: Any | None,
+    *,
+    run_id: str,
+    target_type: str,
+    target_id: str,
+    prompt_ref: str | None,
+    provider: str,
+    operation: str,
+    input_payload: dict[str, Any],
+    output_payload: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
+    if client is None:
+        return None, "disabled"
+
+    try:
+        trace_id = client.create_trace_id(seed=str(run_id))
+        with client.start_as_current_observation(
+            name=f"ashrise.research.{provider}.{operation}",
+            as_type="generation",
+            trace_context={"trace_id": trace_id},
+            input=input_payload,
+            output=output_payload,
+            metadata={
+                **(metadata or {}),
+                "component": "research-provider",
+                "provider": provider,
+                "operation": operation,
+                "run_id": str(run_id),
+                "target_type": target_type,
+                "target_id": target_id,
+                "prompt_ref": prompt_ref,
+            },
+        ):
+            pass
+        try:
+            client.flush()
+        except Exception:
+            pass
+        return trace_id, None
+    except Exception as exc:  # pragma: no cover - network/unavailable integration path
+        return None, str(exc)

@@ -1,6 +1,6 @@
 # Ashrise
 
-Sprint 5 deja el repo-local operativo para Ashrise Core con Postgres, API FastAPI, runtime tooling, agente unificado, `POST /agent/run`, Langfuse self-hosted local, promoción manual de candidatas y reminder diario activo. `ashrise.research` sigue usando fallback `stub` controlado hasta que entre un provider real.
+Sprint 5 deja el repo-local operativo para Ashrise Core con Postgres, API FastAPI, runtime tooling, agente unificado, `POST /agent/run`, Langfuse self-hosted local, promoción manual de candidatas y reminder diario activo. La fase siguiente ya conecta un provider real de research/search detrás de `ashrise.research`, con fallback `stub` cuando no hay credenciales o el provider no responde.
 
 ## Requisitos
 
@@ -31,6 +31,12 @@ Después de cambiar el `PATH` persistente, puede hacer falta reiniciar PowerShel
 - `LANGFUSE_BASE_URL`
 - `LANGFUSE_PUBLIC_KEY`
 - `LANGFUSE_SECRET_KEY`
+- `ASHRISE_RESEARCH_PROVIDER`
+- `ASHRISE_RESEARCH_API_KEY`
+- `ASHRISE_RESEARCH_BASE_URL`
+- `ASHRISE_RESEARCH_REGION`
+- `ASHRISE_RESEARCH_COUNTRY`
+- `ASHRISE_RESEARCH_SEARCH_LANG`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
@@ -87,7 +93,31 @@ $env:ASHRISE_TOKEN = "dev-token"
 $env:LANGFUSE_BASE_URL = "http://localhost:3000"
 $env:LANGFUSE_PUBLIC_KEY = "pk-lf-local"
 $env:LANGFUSE_SECRET_KEY = "sk-lf-local"
+$env:ASHRISE_RESEARCH_PROVIDER = "stub"
+$env:ASHRISE_RESEARCH_API_KEY = ""
 ```
+
+## Research provider real
+
+El provider real elegido es **Brave Search API**. No agrega SDK nuevo: `ashrise.research` lo usa con `httpx` contra el endpoint HTTP oficial y mantiene exactamente las mismas funciones:
+
+- `web_search(...)`
+- `find_competitors(...)`
+- `check_ai_encroachment(...)`
+- `assess_stack(...)`
+
+Configuración mínima para usarlo:
+
+```powershell
+$env:ASHRISE_RESEARCH_PROVIDER = "brave"
+$env:ASHRISE_RESEARCH_API_KEY = "brave-search-api-key"
+$env:ASHRISE_RESEARCH_BASE_URL = "https://api.search.brave.com/res/v1/web/search"
+$env:ASHRISE_RESEARCH_REGION = "LATAM"
+$env:ASHRISE_RESEARCH_COUNTRY = "UY"
+$env:ASHRISE_RESEARCH_SEARCH_LANG = "es"
+```
+
+Si `ASHRISE_RESEARCH_PROVIDER=stub`, falta `ASHRISE_RESEARCH_API_KEY` o Brave falla, el flujo no se rompe: el agente vuelve al fallback stub y el reporte deja `research_fallback=true` con una razón breve.
 
 ## API local
 
@@ -120,9 +150,9 @@ La respuesta del run incluye:
 
 - `prompt_ref`
 - `langfuse_trace_id`
-- metadata con `prompt_source`, `langfuse_status` y target asociado
+- metadata con `prompt_source`, `langfuse_status`, `research_provider` y target asociado
 
-Si Langfuse no está disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`.
+Si Langfuse no está disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`. Cuando el provider real está activo, cada búsqueda relevante deja observabilidad mínima asociada a `run_id`, `target_type`, `target_id` y `prompt_ref`.
 
 ## Promoción de candidatas
 
@@ -238,17 +268,17 @@ Real en Sprint 5:
 - Langfuse self-hosted local en Compose
 - sync de prompts críticos a Langfuse
 - `prompt_ref` y `langfuse_trace_id` en runs/reports relevantes
+- provider real opcional vía Brave Search detrás de `ashrise.research`
 - promoción manual de candidatas listas
 - reminder diario activo con actualización de `research_queue`
 
 Fallback temporal:
 
-- `ashrise.research` sigue con provider `stub`
-- el agente sigue siendo heurístico; la observabilidad de Langfuse traza prompt, input, output y metadata, pero no hay provider LLM externo enchufado todavía
+- `ashrise.research` vuelve a `stub` si faltan credenciales o el provider externo falla
+- el agente sigue siendo heurístico; Langfuse ya traza prompt, input, output, metadata y uso del provider de search, pero no hay provider LLM externo enchufado todavía
 
 ## Qué queda fuera de Sprint 5
 
-- provider real de research web
 - Promptfoo / evals automáticas
 - Langfuse como fuente única de prompts fuera del repo
 - aprobación interactiva desde Telegram
