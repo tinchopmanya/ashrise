@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from ashrise.sanitization import sanitize_for_metadata
 
@@ -14,6 +15,7 @@ except ImportError:  # pragma: no cover - fallback when dependency is absent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DOCKER_LANGFUSE_BASE_URL = "http://langfuse-web:3000"
 
 
 @dataclass(frozen=True)
@@ -88,8 +90,34 @@ def load_prompt_source(definition: PromptDefinition) -> str:
     return definition.fallback_text.strip()
 
 
+def runtime_prompt_label(definition: PromptDefinition) -> str | None:
+    return definition.labels[0] if definition.labels else None
+
+
+def resolve_langfuse_base_url(base_url: str | None = None) -> str:
+    resolved = (base_url if base_url is not None else os.getenv("LANGFUSE_BASE_URL") or "").strip()
+    if not resolved:
+        return ""
+
+    if (os.getenv("ASHRISE_DOCKER") or "").strip() != "1":
+        return resolved
+
+    parsed = urlparse(resolved)
+    if (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1"}:
+        return resolved
+
+    internal = urlparse(os.getenv("LANGFUSE_DOCKER_BASE_URL") or DOCKER_LANGFUSE_BASE_URL)
+    scheme = parsed.scheme or internal.scheme
+    hostname = internal.hostname or "langfuse-web"
+    port = internal.port or parsed.port
+    netloc = f"{hostname}:{port}" if port else hostname
+    path = parsed.path or internal.path
+
+    return urlunparse((scheme, netloc, path, "", "", ""))
+
+
 def get_langfuse_client(*, require_config: bool = False):
-    base_url = (os.getenv("LANGFUSE_BASE_URL") or "").strip()
+    base_url = resolve_langfuse_base_url()
     public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
     secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
 
@@ -125,6 +153,7 @@ def resolve_prompt(name: str, client: Any | None = None) -> ResolvedPrompt:
         )
 
     fallback_text = load_prompt_source(definition)
+    runtime_label = runtime_prompt_label(definition)
     if client is None:
         return ResolvedPrompt(
             name=name,
@@ -137,6 +166,7 @@ def resolve_prompt(name: str, client: Any | None = None) -> ResolvedPrompt:
     try:
         client_prompt = client.get_prompt(
             name,
+            label=runtime_label,
             fallback=fallback_text,
             fetch_timeout_seconds=1,
             max_retries=0,
@@ -167,15 +197,39 @@ def sync_prompts(client: Any | None = None) -> list[dict[str, Any]]:
     try:
         for name, definition in PROMPT_DEFINITIONS.items():
             source_text = load_prompt_source(definition)
-            existing = langfuse_client.get_prompt(
+            runtime_label = runtime_prompt_label(definition)
+            runtime_prompt = langfuse_client.get_prompt(
                 name,
+                label=runtime_label,
                 fallback=source_text,
                 fetch_timeout_seconds=1,
                 max_retries=0,
             )
 
-            if not getattr(existing, "is_fallback", False) and getattr(existing, "prompt", "") == source_text:
+            if not getattr(runtime_prompt, "is_fallback", False) and getattr(runtime_prompt, "prompt", "") == source_text:
                 results.append({"name": name, "status": "unchanged"})
+                continue
+
+            latest_prompt = langfuse_client.get_prompt(
+                name,
+                label="latest",
+                fallback=source_text,
+                fetch_timeout_seconds=1,
+                max_retries=0,
+            )
+            latest_matches = (
+                not getattr(latest_prompt, "is_fallback", False)
+                and getattr(latest_prompt, "prompt", "") == source_text
+            )
+            latest_labels = set(getattr(latest_prompt, "labels", []) or [])
+
+            if runtime_label and latest_matches and runtime_label not in latest_labels:
+                langfuse_client.update_prompt(
+                    name=name,
+                    version=getattr(latest_prompt, "version"),
+                    new_labels=list(definition.labels),
+                )
+                results.append({"name": name, "status": "relabeled"})
                 continue
 
             langfuse_client.create_prompt(
@@ -188,7 +242,7 @@ def sync_prompts(client: Any | None = None) -> list[dict[str, Any]]:
             results.append(
                 {
                     "name": name,
-                    "status": "created" if getattr(existing, "is_fallback", False) else "updated",
+                    "status": "created" if getattr(latest_prompt, "is_fallback", False) else "updated",
                 }
             )
 

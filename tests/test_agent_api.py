@@ -1,7 +1,12 @@
 from ashrise.research import assess_stack, check_ai_encroachment, find_competitors, web_search
 
 
-def test_agent_run_project_persists_audit_and_updates_state(app_client, auth_headers):
+def test_agent_run_project_persists_audit_and_updates_state(app_client, auth_headers, monkeypatch):
+    monkeypatch.delenv("ASHRISE_RESEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_BASE_URL", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_PROJECT_ID", raising=False)
+
     response = app_client.post(
         "/agent/run",
         headers=auth_headers,
@@ -27,7 +32,12 @@ def test_agent_run_project_persists_audit_and_updates_state(app_client, auth_hea
     assert state.json()["last_audit_id"] == payload["report"]["id"]
 
 
-def test_agent_run_candidate_persists_report_and_updates_last_research(app_client, auth_headers, db_conn):
+def test_agent_run_candidate_persists_report_and_updates_last_research(app_client, auth_headers, db_conn, monkeypatch):
+    monkeypatch.delenv("ASHRISE_RESEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_BASE_URL", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("ASHRISE_RESEARCH_PROJECT_ID", raising=False)
+
     created = app_client.post(
         "/candidates",
         headers=auth_headers,

@@ -4,9 +4,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 import os
 import re
 from typing import Any
+import unicodedata
 from urllib.parse import urlparse
 
 import httpx
@@ -15,9 +17,12 @@ from ashrise.langfuse_support import get_langfuse_client, record_research_trace
 from ashrise.sanitization import redact_sensitive_text, sanitize_for_metadata
 
 
+TAVILY_BASE_URL = "https://api.tavily.com"
+TAVILY_SEARCH_PATH = "/search"
+TAVILY_MAX_RESULTS = 5
+DEFAULT_OPERATION_TIMEOUT = 10.0
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_COUNT = 5
-BRAVE_OPERATION_TIMEOUT = 10.0
 GENERIC_PROVIDER_NAMES = {"generic", "remote"}
 EXCLUDED_COMPETITOR_NAMES = {
     "brave",
@@ -32,6 +37,7 @@ EXCLUDED_COMPETITOR_NAMES = {
     "reddit",
     "software advice",
     "softwareadvice",
+    "tavily",
     "wikipedia",
     "youtube",
 }
@@ -62,10 +68,66 @@ WEAK_STACK_RISK_TOKENS = {
     "rewrite",
     "security patch",
 }
+PROVIDER_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "con",
+    "de",
+    "del",
+    "el",
+    "en",
+    "for",
+    "la",
+    "las",
+    "los",
+    "of",
+    "para",
+    "the",
+    "un",
+    "una",
+    "y",
+}
+PROVIDER_QUERY_NOISE_TOKENS = {
+    "actual",
+    "current",
+    "demo",
+    "demostrable",
+    "diferenciacion",
+    "focus",
+    "foco",
+    "milestone",
+    "mvp",
+    "next",
+    "paso",
+    "polish",
+    "priority",
+    "proximo",
+    "pulido",
+    "roadmap",
+    "ship",
+    "sprint",
+    "step",
+    "todo",
+    "v1",
+    "v2",
+}
 _RESEARCH_TRACE_CONTEXT: ContextVar["ResearchTraceContext | None"] = ContextVar(
     "ashrise_research_trace_context",
     default=None,
 )
+TAVILY_COUNTRY_MAP = {
+    "ar": "argentina",
+    "br": "brazil",
+    "cl": "chile",
+    "co": "colombia",
+    "es": "spain",
+    "mx": "mexico",
+    "pe": "peru",
+    "pt": "portugal",
+    "us": "united states",
+    "uy": "uruguay",
+}
 
 
 @dataclass(frozen=True)
@@ -73,6 +135,7 @@ class ResearchSettings:
     provider: str
     base_url: str | None
     api_key: str | None
+    project_id: str | None
     timeout: float
     region: str
     country: str
@@ -82,14 +145,17 @@ class ResearchSettings:
     def from_env(cls) -> "ResearchSettings":
         provider = (os.getenv("ASHRISE_RESEARCH_PROVIDER") or "stub").strip().lower()
         base_url = (os.getenv("ASHRISE_RESEARCH_BASE_URL") or "").strip() or None
-        if provider == "brave" and base_url is None:
+        if provider == "tavily" and base_url is None:
+            base_url = TAVILY_BASE_URL
+        elif provider == "brave" and base_url is None:
             base_url = BRAVE_SEARCH_URL
 
         return cls(
             provider=provider,
             base_url=base_url,
             api_key=(os.getenv("ASHRISE_RESEARCH_API_KEY") or "").strip() or None,
-            timeout=float(os.getenv("ASHRISE_RESEARCH_TIMEOUT", str(BRAVE_OPERATION_TIMEOUT))),
+            project_id=(os.getenv("ASHRISE_RESEARCH_PROJECT_ID") or "").strip() or None,
+            timeout=float(os.getenv("ASHRISE_RESEARCH_TIMEOUT", str(DEFAULT_OPERATION_TIMEOUT))),
             region=(os.getenv("ASHRISE_RESEARCH_REGION") or "LATAM").strip() or "LATAM",
             country=(os.getenv("ASHRISE_RESEARCH_COUNTRY") or "UY").strip() or "UY",
             search_lang=(os.getenv("ASHRISE_RESEARCH_SEARCH_LANG") or "es").strip() or "es",
@@ -259,6 +325,32 @@ def _normalize(value: str) -> str:
     return " ".join(value.lower().replace("_", " ").replace("-", " ").split())
 
 
+def _simplify_provider_query(query: str) -> str:
+    ascii_query = (
+        unicodedata.normalize("NFKD", query)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    tokens = re.findall(r"[a-z0-9]+", ascii_query)
+    simplified: list[str] = []
+    seen: set[str] = set()
+
+    for token in tokens:
+        if token in seen:
+            continue
+        if token in PROVIDER_QUERY_STOPWORDS or token in PROVIDER_QUERY_NOISE_TOKENS:
+            continue
+        if len(token) < 2:
+            continue
+        seen.add(token)
+        simplified.append(token)
+        if len(simplified) >= 8:
+            break
+
+    return " ".join(simplified)
+
+
 def _profile_for_topic(topic: str) -> dict[str, Any]:
     normalized = _normalize(topic)
     for profile in STUB_PROFILES:
@@ -269,6 +361,10 @@ def _profile_for_topic(topic: str) -> dict[str, Any]:
 
 def _provider_missing_reason(settings: ResearchSettings) -> str | None:
     if settings.provider == "stub":
+        return None
+    if settings.provider == "tavily":
+        if not settings.api_key:
+            return "Tavily requiere ASHRISE_RESEARCH_API_KEY."
         return None
     if settings.provider == "brave":
         if not settings.api_key:
@@ -289,6 +385,18 @@ def _freshness_for_days(recency_days: int) -> str:
     if recency_days <= 31:
         return "pm"
     return "py"
+
+
+def _time_range_for_days(recency_days: int) -> str | None:
+    if recency_days <= 0:
+        return None
+    if recency_days <= 1:
+        return "day"
+    if recency_days <= 7:
+        return "week"
+    if recency_days <= 31:
+        return "month"
+    return "year"
 
 
 def _days_from_age(value: Any, default: int) -> int:
@@ -316,6 +424,33 @@ def _days_from_age(value: Any, default: int) -> int:
     if unit == "year":
         return amount * 365
     return default
+
+
+def _days_from_published_date(value: Any, default: int) -> int:
+    if not isinstance(value, str) or not value.strip():
+        return default
+
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        published_at = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            published_at = datetime.combine(date.fromisoformat(value[:10]), datetime.min.time(), tzinfo=UTC)
+        except ValueError:
+            return default
+
+    if published_at.tzinfo is None:
+        published_at = published_at.replace(tzinfo=UTC)
+    return max(0, (datetime.now(UTC) - published_at.astimezone(UTC)).days)
+
+
+def _country_for_tavily(country: str) -> str | None:
+    normalized = country.strip().lower()
+    if not normalized:
+        return None
+    if len(normalized) == 2:
+        return TAVILY_COUNTRY_MAP.get(normalized)
+    return normalized
 
 
 def _trace_provider_usage(
@@ -559,6 +694,65 @@ def _normalize_brave_rows(payload: dict[str, Any], query: str, recency_days: int
     return normalized_rows
 
 
+def _normalize_tavily_rows(payload: dict[str, Any], query: str, recency_days: int) -> list[dict[str, Any]]:
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized_rows.append(
+            {
+                "title": row.get("title") or query,
+                "url": row.get("url") or f"{TAVILY_BASE_URL}/search",
+                "snippet": row.get("content") or "",
+                "published_days_ago": _days_from_published_date(row.get("published_date"), recency_days),
+                "provider": "tavily",
+                "fallback": False,
+                "query": query,
+                "score": row.get("score"),
+            }
+        )
+    return normalized_rows
+
+
+def _tavily_search(query: str, recency_days: int, settings: ResearchSettings) -> list[dict[str, Any]]:
+    request_body: dict[str, Any] = {
+        "query": query,
+        "search_depth": "basic",
+        "max_results": TAVILY_MAX_RESULTS,
+        "include_answer": False,
+        "include_raw_content": False,
+        "include_images": False,
+    }
+    time_range = _time_range_for_days(recency_days)
+    if time_range:
+        request_body["time_range"] = time_range
+
+    country = _country_for_tavily(settings.country)
+    if country:
+        request_body["country"] = country
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.api_key or ''}",
+    }
+    if settings.project_id:
+        headers["X-Project-ID"] = settings.project_id
+
+    with httpx.Client(timeout=settings.timeout) as client:
+        response = client.post(
+            f"{(settings.base_url or TAVILY_BASE_URL).rstrip('/')}{TAVILY_SEARCH_PATH}",
+            json=request_body,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return _normalize_tavily_rows(response.json(), query, recency_days)
+
+
 def _brave_web_search(query: str, recency_days: int, settings: ResearchSettings) -> list[dict[str, Any]]:
     params = {
         "q": query,
@@ -630,29 +824,70 @@ def _provider_search(
     if missing_reason:
         return None, missing_reason
 
-    try:
+    def _request(request_query: str) -> list[dict[str, Any]]:
+        if settings.provider == "tavily":
+            return _tavily_search(request_query, recency_days, settings)
         if settings.provider == "brave":
-            results = _brave_web_search(query, recency_days, settings)
-        elif settings.provider in GENERIC_PROVIDER_NAMES:
-            results = _generic_remote_search(query, recency_days, settings)
-        else:
-            return None, f"Provider de research '{settings.provider}' no soportado; usando fallback stub."
+            return _brave_web_search(request_query, recency_days, settings)
+        if settings.provider in GENERIC_PROVIDER_NAMES:
+            return _generic_remote_search(request_query, recency_days, settings)
+        raise ValueError(f"Provider de research '{settings.provider}' no soportado; usando fallback stub.")
 
+    attempted_queries = [query]
+    simplified_query = _simplify_provider_query(query)
+    if simplified_query and simplified_query != query:
+        attempted_queries.append(simplified_query)
+
+    try:
+        for request_query in attempted_queries:
+            results = _request(request_query)
+            if results:
+                trace_metadata = {
+                    "result_count": len(results),
+                    "fallback": False,
+                    "attempted_queries": attempted_queries,
+                    "request_query": request_query,
+                }
+                if settings.project_id:
+                    trace_metadata["provider_project_id"] = settings.project_id
+                _trace_provider_usage(
+                    provider=settings.provider,
+                    operation=operation,
+                    query=query,
+                    metadata=trace_metadata,
+                    output_payload={"result_count": len(results)},
+                )
+                return results, None
+
+        empty_reason = (
+            f"El provider {settings.provider} no devolvio resultados utiles para la query; usando fallback stub."
+        )
+        trace_metadata = {
+            "fallback": True,
+            "error": empty_reason,
+            "empty_result": True,
+            "attempted_queries": attempted_queries,
+        }
+        if settings.project_id:
+            trace_metadata["provider_project_id"] = settings.project_id
         _trace_provider_usage(
             provider=settings.provider,
             operation=operation,
             query=query,
-            metadata={"result_count": len(results), "fallback": False},
-            output_payload={"result_count": len(results)},
+            metadata=trace_metadata,
+            output_payload={"result_count": 0, "error": empty_reason},
         )
-        return results or None, None
+        return None, empty_reason
     except Exception as exc:  # pragma: no cover - network/failure path exercised through API fallback tests
         safe_error = redact_sensitive_text(str(exc))
+        trace_metadata = {"fallback": True, "error": safe_error}
+        if settings.project_id:
+            trace_metadata["provider_project_id"] = settings.project_id
         _trace_provider_usage(
             provider=settings.provider,
             operation=operation,
             query=query,
-            metadata={"fallback": True, "error": safe_error},
+            metadata=trace_metadata,
             output_payload={"result_count": 0, "error": safe_error},
         )
         return None, safe_error
