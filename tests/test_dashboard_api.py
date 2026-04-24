@@ -1588,3 +1588,209 @@ def test_dashboard_system_jobs_and_integrations(app_client, auth_headers, db_con
     integrations_payload = integrations_response.json()
     assert any(item["key"] == "telegram" for item in integrations_payload["items"])
     assert any(item["key"] == "langfuse" for item in integrations_payload["items"])
+
+
+def test_dashboard_activity_feed_happy_path_filters_and_cursor(app_client, auth_headers, db_conn):
+    project_id = f"activity-{uuid4().hex[:8]}"
+    other_project_id = f"activity-{uuid4().hex[:8]}"
+    run_id = uuid4()
+    handoff_id = uuid4()
+    decision_id = uuid4()
+    audit_id = uuid4()
+    idea_id = uuid4()
+    task_id = uuid4()
+    candidate_id = uuid4()
+    research_id = uuid4()
+    notification_id = uuid4()
+    now = datetime.now(UTC)
+
+    db_conn.execute(
+        """
+        INSERT INTO projects (id, name, kind, status)
+        VALUES (%s, 'Activity Project', 'project', 'active')
+        """,
+        (project_id,),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO projects (id, name, kind, status)
+        VALUES (%s, 'Other Activity Project', 'project', 'active')
+        """,
+        (other_project_id,),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO vertical_candidates (
+            id, slug, name, category, hypothesis, status, promoted_to_project_id
+        )
+        VALUES (
+            %s, 'activity-candidate', 'Activity Candidate', 'learning', 'Feed test candidate', 'promising', %s
+        )
+        """,
+        (candidate_id, project_id),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO ideas (id, project_id, raw_text, source, status, created_at)
+        VALUES (%s, %s, 'Consolidate activity feed view', 'telegram', 'triaged', %s)
+        """,
+        (idea_id, project_id, now - timedelta(minutes=5)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO tasks (
+            id, idea_id, project_id, candidate_id, title, description, status, position, created_at, updated_at
+        )
+        VALUES (
+            %s, %s, %s, %s, 'Wire feed table', 'Connect backend and detail panel', 'progress', 0, %s, %s
+        )
+        """,
+        (task_id, idea_id, project_id, candidate_id, now - timedelta(minutes=4), now - timedelta(minutes=4)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO runs (id, project_id, agent, mode, status, summary, started_at, ended_at)
+        VALUES (%s, %s, 'codex', 'implement', 'completed', 'Built activity feed endpoint', %s, %s)
+        """,
+        (run_id, project_id, now - timedelta(minutes=1), now - timedelta(minutes=1)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO handoffs (id, project_id, from_actor, to_actor, reason, message, status, created_at)
+        VALUES (%s, %s, 'codex', 'human:martin', 'needs-human-review', 'Review the activity feed polish', 'open', %s)
+        """,
+        (handoff_id, project_id, now - timedelta(minutes=2)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO decisions (id, project_id, title, context, decision, consequences, status, created_by, created_at)
+        VALUES (
+            %s, %s, 'Keep activity read-only', 'F7A scope', 'No new write actions in this turn',
+            'Lower rollout risk', 'active', 'codex', %s
+        )
+        """,
+        (decision_id, project_id, now - timedelta(minutes=3)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO audit_reports (id, project_id, verdict, confidence, summary, findings, created_at)
+        VALUES (%s, %s, 'keep', 0.88, 'Activity feed looks stable', %s, %s)
+        """,
+        (audit_id, project_id, Jsonb([]), now - timedelta(minutes=6)),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO candidate_research_reports (
+            id, candidate_id, verdict, confidence, summary,
+            competitors_found, market_signals, stack_findings, kill_criteria_hits,
+            sub_gap_proposals, proposed_next_steps, evidence_refs, candidate_snapshot, metadata, created_at
+        )
+        VALUES (
+            %s, %s, 'advance', 0.81, 'Research says keep pushing the dashboard',
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            research_id,
+            candidate_id,
+            Jsonb([]),
+            Jsonb([]),
+            Jsonb([]),
+            Jsonb([]),
+            Jsonb([]),
+            Jsonb(["Activity feed next"]),
+            Jsonb([]),
+            Jsonb({"slug": "activity-candidate"}),
+            Jsonb({}),
+            now - timedelta(minutes=7),
+        ),
+    )
+    db_conn.execute(
+        """
+        INSERT INTO notification_events (
+            id, channel, direction, project_id, candidate_id, run_id, idea_id, task_id,
+            message_type, delivery_status, summary, payload_summary, created_at, delivered_at
+        )
+        VALUES (
+            %s, 'telegram', 'outbound', %s, %s, %s, %s, %s,
+            'active-daily-summary', 'delivered', 'Sent daily activity digest', %s, %s, %s
+        )
+        """,
+        (
+            notification_id,
+            project_id,
+            candidate_id,
+            run_id,
+            idea_id,
+            task_id,
+            Jsonb({"chat_id": "123", "items": 4}),
+            now,
+            now,
+        ),
+    )
+
+    response = app_client.get(
+        "/dashboard/activity-feed",
+        headers=auth_headers,
+        params={"limit": 5, "project_id": project_id},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"]
+    assert payload["items"][0]["kind"] == "notification"
+    kinds = {item["kind"] for item in payload["items"]}
+    assert "run" in kinds
+    assert payload["next_cursor"] is not None
+
+    run_item = next(item for item in payload["items"] if item["kind"] == "run" and item["run_id"] == str(run_id))
+    assert run_item["project_id"] == project_id
+    assert run_item["run_id"] == str(run_id)
+    assert run_item["route"] == "/dashboard/runs"
+    assert run_item["actor"] == "codex"
+
+    filtered_response = app_client.get(
+        "/dashboard/activity-feed",
+        headers=auth_headers,
+        params={"kind": "decision", "project_id": project_id},
+    )
+    assert filtered_response.status_code == 200
+    filtered_payload = filtered_response.json()
+    assert len(filtered_payload["items"]) == 1
+    assert filtered_payload["items"][0]["id"] == str(decision_id)
+    assert filtered_payload["items"][0]["route"] == f"/dashboard/projects/{project_id}"
+
+    candidate_response = app_client.get(
+        "/dashboard/activity-feed",
+        headers=auth_headers,
+        params={"candidate_id": str(candidate_id), "kind": "research_report"},
+    )
+    assert candidate_response.status_code == 200
+    candidate_payload = candidate_response.json()
+    assert len(candidate_payload["items"]) == 1
+    assert candidate_payload["items"][0]["id"] == str(research_id)
+    assert candidate_payload["items"][0]["verdict"] == "advance"
+
+    cursor_response = app_client.get(
+        "/dashboard/activity-feed",
+        headers=auth_headers,
+        params={"limit": 5, "project_id": project_id, "cursor": payload["next_cursor"]},
+    )
+    assert cursor_response.status_code == 200
+    cursor_payload = cursor_response.json()
+    assert all(item["id"] != payload["items"][0]["id"] for item in cursor_payload["items"])
+
+
+def test_dashboard_activity_feed_empty(app_client, auth_headers, db_conn):
+    db_conn.execute("DELETE FROM notification_events")
+    db_conn.execute("DELETE FROM candidate_research_reports")
+    db_conn.execute("DELETE FROM tasks")
+    db_conn.execute("DELETE FROM ideas")
+    db_conn.execute("DELETE FROM audit_reports")
+    db_conn.execute("DELETE FROM decisions")
+    db_conn.execute("DELETE FROM handoffs")
+    db_conn.execute("DELETE FROM runs")
+
+    response = app_client.get("/dashboard/activity-feed", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {"items": [], "next_cursor": None}

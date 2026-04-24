@@ -9,9 +9,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
+  getActivityFeed,
   patchProject,
   createDecision,
   createTask,
@@ -47,6 +48,8 @@ import {
   updateTask,
 } from "./api";
 import type {
+  ActivityFeedItem,
+  ActivityFeedResponse,
   AgentRunResponse,
   CandidatePatchInput,
   CandidatePromotionResponse,
@@ -84,6 +87,7 @@ type IdeasSubview = "tree" | "tasks" | "board";
 
 const navItems = [
   { to: "/dashboard", label: "Overview", caption: "Core pulse" },
+  { to: "/dashboard/activity", label: "Activity", caption: "One feed, real signals" },
   { to: "/dashboard/projects", label: "Projects", caption: "Read-only fleet" },
   { to: "/dashboard/runs", label: "Runs", caption: "Recent activity" },
   { to: "/dashboard/handoffs", label: "Handoffs", caption: "Inbox by actor" },
@@ -108,6 +112,18 @@ const ideasSubviewOptions: Array<{ value: IdeasSubview; label: string }> = [
   { value: "tasks", label: "Tasks" },
   { value: "board", label: "Board" },
 ];
+
+const activityKindOptions = [
+  { value: "", label: "Todos los kinds" },
+  { value: "run", label: "Runs" },
+  { value: "handoff", label: "Handoffs" },
+  { value: "decision", label: "Decisions" },
+  { value: "audit", label: "Audits" },
+  { value: "idea", label: "Ideas" },
+  { value: "task", label: "Tasks" },
+  { value: "research_report", label: "Research reports" },
+  { value: "notification", label: "Notifications" },
+] as const;
 
 const healthLabels: Record<string, string> = {
   api: "API",
@@ -253,6 +269,29 @@ function formatNumber(value: number | null) {
   return new Intl.NumberFormat("es-UY").format(value);
 }
 
+function activityKindLabel(value: string) {
+  if (value === "research_report") {
+    return "Research report";
+  }
+  return sentenceCase(value);
+}
+
+function activityItemSubject(item: ActivityFeedItem) {
+  if (item.project_id) {
+    return item.project_id;
+  }
+  if (item.candidate_id) {
+    return item.candidate_id;
+  }
+  if (item.idea_id) {
+    return item.idea_id;
+  }
+  if (item.task_id) {
+    return item.task_id;
+  }
+  return "—";
+}
+
 function isLiveStatus(status: string) {
   return status === "running";
 }
@@ -298,7 +337,7 @@ function AppShell({ children, title, subtitle }: { children: React.ReactNode; ti
           <div className="brand-mark">A</div>
             <div>
               <div className="eyebrow">Ashrise</div>
-              <h1>Dashboard F6B</h1>
+              <h1>Dashboard F7A</h1>
             </div>
           </div>
 
@@ -323,8 +362,8 @@ function AppShell({ children, title, subtitle }: { children: React.ReactNode; ti
         </nav>
 
         <div className="sidebar-note reveal" style={{ "--stagger": 9 } as React.CSSProperties}>
-          <span className="eyebrow">Phase 6B</span>
-          <p>Prompts, traces, notifications y system integrations avanzan sobre señales reales persistidas, sin inventar activity ni abrir acciones write nuevas.</p>
+          <span className="eyebrow">Phase 7A</span>
+          <p>Activity feed consolidado y filtros persistidos en URL para ver qué pasó en el sistema sin abrir cinco tabs en paralelo.</p>
         </div>
       </aside>
 
@@ -4455,6 +4494,253 @@ function SystemPage() {
   );
 }
 
+function ActivityFeedPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = {
+    kind: searchParams.get("kind") ?? "",
+    project_id: searchParams.get("project_id") ?? "",
+    candidate_id: searchParams.get("candidate_id") ?? "",
+    status: searchParams.get("status") ?? "",
+    source: searchParams.get("source") ?? "",
+  };
+  const deferredFilters = useDeferredValue(filters);
+  const feedQuery = useQuery({
+    queryKey: ["dashboard-activity-feed", deferredFilters],
+    queryFn: () => getActivityFeed(deferredFilters),
+  });
+  const feed = feedQuery.data as ActivityFeedResponse | undefined;
+  const items = feed?.items || [];
+  const [selectedActivityKey, setSelectedActivityKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!items.length) {
+      if (selectedActivityKey !== null) {
+        setSelectedActivityKey(null);
+      }
+      return;
+    }
+    if (!selectedActivityKey || !items.some((item) => `${item.kind}:${item.id}` === selectedActivityKey)) {
+      const firstItem = items[0];
+      if (firstItem) {
+        setSelectedActivityKey(`${firstItem.kind}:${firstItem.id}`);
+      }
+    }
+  }, [items, selectedActivityKey]);
+
+  const selectedItem = items.find((item) => `${item.kind}:${item.id}` === selectedActivityKey) || null;
+  const hasFilters = Object.values(filters).some(Boolean);
+
+  function updateFilter(key: keyof typeof filters, value: string) {
+    const next = new URLSearchParams(searchParams);
+    if (value) {
+      next.set(key, value);
+    } else {
+      next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  function clearFilters() {
+    const next = new URLSearchParams(searchParams);
+    Object.keys(filters).forEach((key) => next.delete(key));
+    setSearchParams(next, { replace: true });
+  }
+
+  if (feedQuery.isLoading) {
+    return (
+      <AppShell title="Activity" subtitle="Feed consolidado construido solo con señales reales persistidas en Ashrise.">
+        <SkeletonBlock height={220} />
+        <SkeletonBlock height={520} />
+      </AppShell>
+    );
+  }
+
+  if (feedQuery.isError || !feed) {
+    return (
+      <AppShell title="Activity" subtitle="Feed consolidado construido solo con señales reales persistidas en Ashrise.">
+        <StateScreen
+          title="No pude cargar activity"
+          body={feedQuery.isError ? feedQuery.error.message : "Missing activity payload"}
+          tone="bad"
+        />
+      </AppShell>
+    );
+  }
+
+  const counts = {
+    visible: items.length,
+    runs: items.filter((item) => item.kind === "run").length,
+    decisions: items.filter((item) => item.kind === "decision").length,
+    research: items.filter((item) => item.kind === "research_report").length,
+    notifications: items.filter((item) => item.kind === "notification").length,
+  };
+
+  return (
+    <AppShell
+      title="Activity"
+      subtitle="Un solo feed read-only para runs, handoffs, decisions, audits, ideas, tasks, research reports y notification events reales."
+    >
+      <div className="kpi-grid langfuse-kpis">
+        <KpiCard label="Visible items" value={counts.visible} note="filtrados y ordenados por timestamp real" stagger={0} />
+        <KpiCard label="Runs" value={counts.runs} note="ejecuciones recientes del sistema" stagger={1} />
+        <KpiCard label="Decisions" value={counts.decisions} note="cambios explícitos de criterio o alcance" stagger={2} />
+        <KpiCard label="Research" value={counts.research} note="candidate research reports persistidos" stagger={3} />
+        <KpiCard label="Notifications" value={counts.notifications} note="eventos persistidos del runtime" stagger={4} />
+      </div>
+
+      <Section
+        title="Activity feed"
+        eyebrow="Read-only consolidated view"
+        stagger={1}
+        aside={
+          hasFilters ? (
+            <button className="secondary-button" type="button" onClick={clearFilters}>
+              Clear filters
+            </button>
+          ) : (
+            <span className="meta-pill">{items.length} rows</span>
+          )
+        }
+      >
+        <div className="filters activity-filters">
+          <select value={filters.kind} onChange={(event) => updateFilter("kind", event.target.value)}>
+            {activityKindOptions.map((option) => (
+              <option key={option.value || "all"} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <input
+            value={filters.project_id}
+            onChange={(event) => updateFilter("project_id", event.target.value)}
+            placeholder="project_id"
+          />
+          <input
+            value={filters.candidate_id}
+            onChange={(event) => updateFilter("candidate_id", event.target.value)}
+            placeholder="candidate_id"
+          />
+          <input
+            value={filters.status}
+            onChange={(event) => updateFilter("status", event.target.value)}
+            placeholder="status"
+          />
+          <input
+            value={filters.source}
+            onChange={(event) => updateFilter("source", event.target.value)}
+            placeholder="source"
+          />
+        </div>
+
+        {items.length === 0 ? (
+          <StateScreen
+            title="No hay actividad para estos filtros"
+            body="La estructura está lista y los filtros persisten en la URL; si no hay señales reales para esta combinación, el dashboard muestra vacío honesto."
+          />
+        ) : (
+          <div className="detail-layout">
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ts</th>
+                    <th>kind</th>
+                    <th>title</th>
+                    <th>status / verdict</th>
+                    <th>actor</th>
+                    <th>source</th>
+                    <th>subject</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item) => {
+                    const rowKey = `${item.kind}:${item.id}`;
+                    return (
+                      <tr
+                        key={rowKey}
+                        className={rowKey === selectedActivityKey ? "selected-row" : ""}
+                        onClick={() => setSelectedActivityKey(rowKey)}
+                      >
+                        <td>{formatDateTime(item.ts)}</td>
+                        <td><span className="meta-pill">{activityKindLabel(item.kind)}</span></td>
+                        <td>
+                          <strong>{item.title}</strong>
+                          <div className="cell-subtitle">{truncateText(item.summary || "Sin summary persistido.", 84)}</div>
+                        </td>
+                        <td>
+                          {item.status ? (
+                            <StatusChip value={item.status} live={item.status === "running"} />
+                          ) : item.verdict ? (
+                            <StatusChip value={item.verdict} />
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>{item.actor || "—"}</td>
+                        <td>{item.source || "—"}</td>
+                        <td>{activityItemSubject(item)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="detail-panel">
+              {selectedItem ? (
+                <Section
+                  title="Activity detail"
+                  eyebrow="Selected event"
+                  stagger={2}
+                  aside={
+                    selectedItem.route ? (
+                      <Link className="secondary-button" to={selectedItem.route}>
+                        Open source view
+                      </Link>
+                    ) : undefined
+                  }
+                >
+                  <article className="list-card">
+                    <div className="row spread">
+                      <h4>{selectedItem.title}</h4>
+                      {selectedItem.status ? (
+                        <StatusChip value={selectedItem.status} live={selectedItem.status === "running"} />
+                      ) : selectedItem.verdict ? (
+                        <StatusChip value={selectedItem.verdict} />
+                      ) : (
+                        <span className="meta-pill">{activityKindLabel(selectedItem.kind)}</span>
+                      )}
+                    </div>
+                    <p>{selectedItem.summary || "Sin summary persistido para este evento."}</p>
+                    <KeyValueList
+                      items={[
+                        { label: "timestamp", value: formatDateTime(selectedItem.ts) },
+                        { label: "kind", value: activityKindLabel(selectedItem.kind) },
+                        { label: "project", value: selectedItem.project_id || "—" },
+                        { label: "candidate", value: selectedItem.candidate_id || "—" },
+                        { label: "idea", value: selectedItem.idea_id || "—" },
+                        { label: "task", value: selectedItem.task_id || "—" },
+                        { label: "run", value: selectedItem.run_id || "—" },
+                        { label: "actor", value: selectedItem.actor || "—" },
+                        { label: "source", value: selectedItem.source || "—" },
+                      ]}
+                    />
+                  </article>
+                  {feed.next_cursor ? (
+                    <p className="panel-note">Hay más actividad detrás de esta página. El backend ya expone cursor, aunque esta primera superficie navega solo el bloque reciente.</p>
+                  ) : null}
+                </Section>
+              ) : (
+                <StateScreen title="Seleccioná un evento" body="Elegí una fila para ver el detalle lateral del item consolidado." />
+              )}
+            </div>
+          </div>
+        )}
+      </Section>
+    </AppShell>
+  );
+}
+
 function LangfuseTraceCard({
   item,
   index,
@@ -4845,6 +5131,7 @@ export function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<OverviewPage />} />
+      <Route path="/dashboard/activity" element={<ActivityFeedPage />} />
       <Route path="/dashboard/projects" element={<ProjectsPage />} />
       <Route path="/dashboard/projects/:projectId" element={<ProjectDetailPage />} />
       <Route path="/dashboard/runs" element={<RunsPage />} />
@@ -4857,8 +5144,8 @@ export function App() {
       <Route
         path="*"
         element={
-          <AppShell title="Not found" subtitle="La ruta no existe dentro del dashboard F6B.">
-            <StateScreen title="Ruta no encontrada" body="Volvé a Overview, Projects, Runs, Handoffs, Ideas, Research, Prompts & Traces, Notifications o System." tone="bad" />
+          <AppShell title="Not found" subtitle="La ruta no existe dentro del dashboard F7A.">
+            <StateScreen title="Ruta no encontrada" body="Volvé a Overview, Activity, Projects, Runs, Handoffs, Ideas, Research, Prompts & Traces, Notifications o System." tone="bad" />
           </AppShell>
         }
       />

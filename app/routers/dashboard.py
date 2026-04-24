@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from datetime import date, datetime, timedelta
+import json
 import os
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
@@ -276,6 +278,382 @@ def serialize_notification_event(row: dict[str, object]) -> dict[str, object]:
 
 def notification_where_sql(clauses: list[str]) -> str:
     return f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+
+def encode_activity_cursor(item: dict[str, object]) -> str:
+    payload = json.dumps(
+        {
+            "ts": item["ts"].isoformat(),
+            "kind": item["kind"],
+            "id": item["id"],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return urlsafe_b64encode(payload).decode("ascii")
+
+
+def decode_activity_cursor(cursor: str | None) -> tuple[datetime, str, str] | None:
+    if not cursor:
+        return None
+
+    try:
+        payload = json.loads(urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
+        ts_value = payload["ts"]
+        kind = payload["kind"]
+        item_id = payload["id"]
+    except Exception as exc:  # pragma: no cover - defensive parse guard
+        raise HTTPException(status_code=422, detail="Invalid activity cursor") from exc
+
+    if not isinstance(ts_value, str) or not isinstance(kind, str) or not isinstance(item_id, str):
+        raise HTTPException(status_code=422, detail="Invalid activity cursor")
+
+    try:
+        ts = datetime.fromisoformat(ts_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid activity cursor") from exc
+
+    return ts, kind, item_id
+
+
+def activity_route_for_item(kind: str, *, project_id: str | None) -> str | None:
+    if kind == "run":
+        return "/dashboard/runs"
+    if kind == "handoff":
+        return "/dashboard/handoffs"
+    if kind in {"decision", "audit"} and project_id:
+        return f"/dashboard/projects/{project_id}"
+    if kind in {"idea", "task"}:
+        return "/dashboard/ideas"
+    if kind == "research_report":
+        return "/dashboard/research"
+    if kind == "notification":
+        return "/dashboard/notifications"
+    return f"/dashboard/projects/{project_id}" if kind == "project" and project_id else None
+
+
+def recent_activity_feed_items(
+    conn: psycopg.Connection,
+    *,
+    kind: str | None = None,
+    project_id: str | None = None,
+    candidate_id: UUID | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> dict[str, object]:
+    requested_kind = kind.strip() if kind else None
+    safe_limit = max(1, min(limit, 100))
+    per_source_limit = max(80, safe_limit * 4)
+    cursor_key = decode_activity_cursor(cursor)
+
+    def kind_allowed(value: str) -> bool:
+        return requested_kind in {None, "", value}
+
+    items: list[dict[str, object]] = []
+
+    if kind_allowed("run"):
+        run_rows = fetch_all(
+            conn,
+            """
+            SELECT
+                r.id,
+                r.project_id,
+                p.name AS project_name,
+                r.agent,
+                r.mode,
+                r.status,
+                r.summary,
+                r.started_at,
+                r.ended_at
+            FROM runs r
+            LEFT JOIN projects p ON p.id = r.project_id
+            ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in run_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["ended_at"] or row["started_at"],
+                    "kind": "run",
+                    "title": f"{row['agent']}{f' · {row['mode']}' if row.get('mode') else ''}",
+                    "summary": summarize_text(row.get("summary")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": None,
+                    "idea_id": None,
+                    "task_id": None,
+                    "run_id": str(row["id"]),
+                    "status": row.get("status"),
+                    "verdict": None,
+                    "actor": row.get("agent"),
+                    "source": row.get("mode"),
+                    "route": activity_route_for_item("run", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("handoff"):
+        handoff_rows = fetch_all(
+            conn,
+            """
+            SELECT id, project_id, from_actor, to_actor, reason, message, status, created_at, resolved_at
+            FROM handoffs
+            ORDER BY COALESCE(resolved_at, created_at) DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in handoff_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["resolved_at"] or row["created_at"],
+                    "kind": "handoff",
+                    "title": f"{row['from_actor']} -> {row['to_actor']}",
+                    "summary": summarize_text(
+                        f"{row['reason']}: {row['message']}" if row.get("message") else row.get("reason")
+                    ),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": None,
+                    "idea_id": None,
+                    "task_id": None,
+                    "run_id": None,
+                    "status": row.get("status"),
+                    "verdict": None,
+                    "actor": row.get("to_actor"),
+                    "source": row.get("reason"),
+                    "route": activity_route_for_item("handoff", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("decision"):
+        decision_rows = fetch_all(
+            conn,
+            """
+            SELECT id, project_id, title, context, decision, status, created_at, created_by
+            FROM decisions
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in decision_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["created_at"],
+                    "kind": "decision",
+                    "title": row["title"],
+                    "summary": summarize_text(row.get("decision") or row.get("context")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": None,
+                    "idea_id": None,
+                    "task_id": None,
+                    "run_id": None,
+                    "status": row.get("status"),
+                    "verdict": None,
+                    "actor": row.get("created_by"),
+                    "source": "decision",
+                    "route": activity_route_for_item("decision", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("audit"):
+        audit_rows = fetch_all(
+            conn,
+            """
+            SELECT id, project_id, verdict, summary, created_at
+            FROM audit_reports
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in audit_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["created_at"],
+                    "kind": "audit",
+                    "title": f"Audit · {row['verdict']}",
+                    "summary": summarize_text(row.get("summary")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": None,
+                    "idea_id": None,
+                    "task_id": None,
+                    "run_id": None,
+                    "status": None,
+                    "verdict": row.get("verdict"),
+                    "actor": "auditor",
+                    "source": "audit",
+                    "route": activity_route_for_item("audit", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("idea"):
+        idea_rows = fetch_all(
+            conn,
+            """
+            SELECT id, project_id, raw_text, source, status, created_at
+            FROM ideas
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in idea_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["created_at"],
+                    "kind": "idea",
+                    "title": derive_idea_title_from_raw_text(row.get("raw_text"), max_length=68),
+                    "summary": summarize_text(row.get("raw_text")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": None,
+                    "idea_id": str(row["id"]),
+                    "task_id": None,
+                    "run_id": None,
+                    "status": row.get("status"),
+                    "verdict": None,
+                    "actor": None,
+                    "source": row.get("source"),
+                    "route": activity_route_for_item("idea", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("task"):
+        task_rows = fetch_all(
+            conn,
+            """
+            SELECT id, idea_id, project_id, candidate_id, title, description, status, updated_at, created_at
+            FROM tasks
+            ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in task_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["updated_at"] or row["created_at"],
+                    "kind": "task",
+                    "title": row["title"],
+                    "summary": summarize_text(row.get("description")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": str(row["candidate_id"]) if row.get("candidate_id") is not None else None,
+                    "idea_id": str(row["idea_id"]) if row.get("idea_id") is not None else None,
+                    "task_id": str(row["id"]),
+                    "run_id": None,
+                    "status": row.get("status"),
+                    "verdict": None,
+                    "actor": None,
+                    "source": "task",
+                    "route": activity_route_for_item("task", project_id=row.get("project_id")),
+                }
+            )
+
+    if kind_allowed("research_report"):
+        research_rows = fetch_all(
+            conn,
+            """
+            SELECT
+                rr.id,
+                rr.candidate_id,
+                rr.verdict,
+                rr.summary,
+                rr.created_at,
+                c.name AS candidate_name,
+                c.promoted_to_project_id
+            FROM candidate_research_reports rr
+            LEFT JOIN vertical_candidates c ON c.id = rr.candidate_id
+            ORDER BY rr.created_at DESC, rr.id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in research_rows:
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["created_at"],
+                    "kind": "research_report",
+                    "title": f"Research · {row.get('candidate_name') or row['candidate_id']}",
+                    "summary": summarize_text(row.get("summary")),
+                    "project_id": row.get("promoted_to_project_id"),
+                    "candidate_id": str(row["candidate_id"]) if row.get("candidate_id") is not None else None,
+                    "idea_id": None,
+                    "task_id": None,
+                    "run_id": None,
+                    "status": None,
+                    "verdict": row.get("verdict"),
+                    "actor": "investigator",
+                    "source": "research",
+                    "route": activity_route_for_item("research_report", project_id=row.get("promoted_to_project_id")),
+                }
+            )
+
+    if kind_allowed("notification"):
+        notification_rows = fetch_all(
+            conn,
+            """
+            SELECT id, channel, direction, project_id, candidate_id, run_id, idea_id, task_id, message_type,
+                   delivery_status, summary, error_summary, created_at
+            FROM notification_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (per_source_limit,),
+        )
+        for row in notification_rows:
+            notification_source = (
+                f"{row['channel']}:{row['message_type']}" if row.get("message_type") else row.get("channel")
+            )
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "ts": row["created_at"],
+                    "kind": "notification",
+                    "title": f"{row['channel']} · {row.get('message_type') or row['direction']}",
+                    "summary": summarize_text(row.get("summary") or row.get("error_summary")),
+                    "project_id": row.get("project_id"),
+                    "candidate_id": str(row["candidate_id"]) if row.get("candidate_id") is not None else None,
+                    "idea_id": str(row["idea_id"]) if row.get("idea_id") is not None else None,
+                    "task_id": str(row["task_id"]) if row.get("task_id") is not None else None,
+                    "run_id": str(row["run_id"]) if row.get("run_id") is not None else None,
+                    "status": row.get("delivery_status"),
+                    "verdict": None,
+                    "actor": row.get("direction"),
+                    "source": notification_source,
+                    "route": activity_route_for_item("notification", project_id=row.get("project_id")),
+                }
+            )
+
+    filtered: list[dict[str, object]] = []
+    for item in items:
+        if project_id and item.get("project_id") != project_id:
+            continue
+        if candidate_id and item.get("candidate_id") != str(candidate_id):
+            continue
+        if status and item.get("status") != status:
+            continue
+        if source and item.get("source") != source:
+            continue
+        if cursor_key and (item["ts"], item["kind"], item["id"]) >= cursor_key:
+            continue
+        filtered.append(item)
+
+    filtered.sort(key=lambda item: (item["ts"], item["kind"], item["id"]), reverse=True)
+    page = filtered[:safe_limit]
+    next_cursor_value = encode_activity_cursor(page[-1]) if len(filtered) > safe_limit and page else None
+
+    return {
+        "items": page,
+        "next_cursor": next_cursor_value,
+    }
 
 
 def latest_notification_event(
@@ -2175,6 +2553,29 @@ def get_dashboard_system_integrations(conn: psycopg.Connection = Depends(get_db)
             },
         ]
     }
+
+
+@router.get("/activity-feed")
+def get_dashboard_activity_feed(
+    kind: str | None = None,
+    project_id: str | None = None,
+    candidate_id: UUID | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    return recent_activity_feed_items(
+        conn,
+        kind=kind,
+        project_id=project_id,
+        candidate_id=candidate_id,
+        status=status,
+        source=source,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.post("/actions/run-agent")

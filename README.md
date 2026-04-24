@@ -168,11 +168,12 @@ La respuesta del run incluye:
 
 Si Langfuse no esta disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`. Cuando el provider real esta activo, cada busqueda relevante deja observabilidad minima asociada a `run_id`, `target_type`, `target_id` y `prompt_ref`.
 
-## Dashboard F6B
+## Dashboard F7A
 
-El repo ahora incluye la base interactiva de tasks, el primer corte del grafo visual de Project Detail, la ola de acciones seguras y el cierre read-only de Langfuse + Notifications/System sobre el dashboard ya estable:
+El repo ahora incluye la base interactiva de tasks, el primer corte del grafo visual de Project Detail, la ola de acciones seguras, el cierre read-only de Langfuse + Notifications/System y un activity feed consolidado sobre el dashboard ya estable:
 
 - Overview
+- Activity
 - Projects
 - Project Detail
 - Runs
@@ -186,6 +187,7 @@ El repo ahora incluye la base interactiva de tasks, el primer corte del grafo vi
 Los datos del dashboard salen solo de los endpoints agregados del backend:
 
 - `GET /dashboard/overview`
+- `GET /dashboard/activity-feed`
 - `GET /dashboard/projects`
 - `GET /dashboard/projects/{id}`
 - `GET /dashboard/projects/{id}/graph`
@@ -220,7 +222,13 @@ Los datos del dashboard salen solo de los endpoints agregados del backend:
 - `POST /decisions`
 - `POST /decisions/{id}/supersede`
 
-F6B cierra la base read-only útil de Fase 6:
+F7A abre el primer bloque de polish útil de Fase 7:
+
+- `Activity` consolida runs, handoffs, decisions, audits, ideas, tasks, research reports y notification events reales en una sola superficie read-only
+- los filtros simples (`kind`, `project_id`, `candidate_id`, `status`, `source`) persisten en la URL
+- el feed se construye solo con señales reales ya persistidas o derivables honestamente, sin activity sintética
+
+F6B había dejado cerrada la base read-only útil de Fase 6:
 
 - `Prompts & Traces` usa primero datos reales ya persistidos en `runs`
 - `Notifications` lee `notification_events` reales y muestra vacío honesto si todavía no hay eventos suficientes

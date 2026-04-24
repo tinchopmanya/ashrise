@@ -1,4 +1,6 @@
 import type {
+  ActivityFeedFilters,
+  ActivityFeedResponse,
   AgentRunResponse,
   CandidatePatchInput,
   CandidatePromotionInput,
@@ -109,6 +111,10 @@ async function dashboardWrite<T>(path: string, init: RequestInit): Promise<T> {
 
 export function getOverview() {
   return dashboardFetch<OverviewResponse>("/dashboard/overview");
+}
+
+export function getActivityFeed(filters: ActivityFeedFilters) {
+  return dashboardFetch<ActivityFeedResponse>("/dashboard/activity-feed", filters);
 }
 
 export function getProjects(filters: {

@@ -357,6 +357,47 @@ export type LangfuseTracesResponse = {
   items: LangfuseTraceItem[];
 };
 
+export type ActivityKind =
+  | "run"
+  | "handoff"
+  | "decision"
+  | "audit"
+  | "idea"
+  | "task"
+  | "research_report"
+  | "notification";
+
+export type ActivityFeedItem = {
+  id: string;
+  ts: string;
+  kind: ActivityKind;
+  title: string;
+  summary: string | null;
+  project_id: string | null;
+  candidate_id: string | null;
+  idea_id: string | null;
+  task_id: string | null;
+  run_id: string | null;
+  status: string | null;
+  verdict: string | null;
+  actor: string | null;
+  source: string | null;
+  route: string | null;
+};
+
+export type ActivityFeedResponse = {
+  items: ActivityFeedItem[];
+  next_cursor: string | null;
+};
+
+export type ActivityFeedFilters = {
+  kind?: string;
+  project_id?: string;
+  candidate_id?: string;
+  status?: string;
+  source?: string;
+};
+
 export type NotificationEventRecord = {
   id: string;
   channel: string;
