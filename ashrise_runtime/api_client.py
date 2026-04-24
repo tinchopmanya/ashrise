@@ -153,3 +153,6 @@ class AshriseApiClient:
 
     def run_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request_json("POST", "/agent/run", json=payload)
+
+    def create_notification_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request_json("POST", "/notification-events", json=payload)

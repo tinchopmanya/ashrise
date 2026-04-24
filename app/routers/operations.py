@@ -16,10 +16,14 @@ from app.db import (
 )
 from app.schemas import (
     DecisionCreate,
+    DecisionSupersedeCreate,
     HandoffCreate,
     HandoffPatch,
     IdeaCreate,
     IdeaPatch,
+    IdeaTriagePatch,
+    NotificationEventCreate,
+    ProjectPatch,
     ProjectStateUpsert,
     RunCreate,
     RunPatch,
@@ -31,6 +35,17 @@ router = APIRouter(tags=["operations"], dependencies=[Depends(require_bearer_tok
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def should_stamp_triaged_at(data: dict[str, object]) -> bool:
+    return any(
+        [
+            data.get("project_id") is not None,
+            data.get("triage_notes") is not None,
+            data.get("promoted_to") is not None,
+            data.get("status") not in (None, "new"),
+        ]
+    )
 
 
 @router.get("/projects")
@@ -79,6 +94,24 @@ def get_project(project_id: str, conn: psycopg.Connection = Depends(get_db)):
 
     project["parent"] = parent
     project["children"] = children
+    return project
+
+
+@router.patch("/projects/{project_id}")
+def patch_project(
+    project_id: str,
+    payload: ProjectPatch,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    project = update_row(
+        conn,
+        "projects",
+        {"id": project_id},
+        payload.model_dump(exclude_unset=True),
+    )
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+
     return project
 
 
@@ -189,6 +222,43 @@ def create_decision(payload: DecisionCreate, conn: psycopg.Connection = Depends(
     return insert_row(conn, "decisions", payload.model_dump(exclude_unset=True))
 
 
+@router.post("/decisions/{decision_id}/supersede", status_code=201)
+def supersede_decision(
+    decision_id: UUID,
+    payload: DecisionSupersedeCreate,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    previous = fetch_one(conn, "SELECT * FROM decisions WHERE id = %s", (decision_id,))
+    if previous is None:
+        raise HTTPException(status_code=404, detail=f"Decision '{decision_id}' not found")
+    if previous["status"] == "superseded":
+        raise HTTPException(status_code=409, detail=f"Decision '{decision_id}' is already superseded")
+
+    replacement = insert_row(
+        conn,
+        "decisions",
+        {
+            "project_id": previous["project_id"],
+            "title": payload.title,
+            "context": payload.context,
+            "decision": payload.decision,
+            "consequences": payload.consequences,
+            "status": payload.status,
+            "supersedes": previous["id"],
+            "created_by": payload.created_by,
+            "metadata": payload.metadata,
+        },
+    )
+    superseded = update_row(
+        conn,
+        "decisions",
+        {"id": decision_id},
+        {"status": "superseded"},
+    )
+    assert superseded is not None
+    return replacement
+
+
 @router.get("/decisions/{project_id}")
 def list_decisions(project_id: str, conn: psycopg.Connection = Depends(get_db)):
     ensure_project_exists(conn, project_id)
@@ -216,7 +286,31 @@ def create_idea(payload: IdeaCreate, conn: psycopg.Connection = Depends(get_db))
         ensure_project_exists(conn, data["project_id"])
     if data.get("status") and data["status"] != "new" and "triaged_at" not in data:
         data["triaged_at"] = utc_now()
-    return insert_row(conn, "ideas", data)
+    idea = insert_row(conn, "ideas", data)
+
+    if idea and payload.source == "telegram":
+        insert_row(
+            conn,
+            "notification_events",
+            {
+                "channel": "telegram",
+                "direction": "inbound",
+                "project_id": idea.get("project_id"),
+                "idea_id": idea["id"],
+                "message_type": "idea-capture",
+                "external_ref": payload.source_ref,
+                "delivery_status": "received",
+                "summary": f"Idea captured from Telegram: {idea['raw_text'][:120]}",
+                "payload_summary": {
+                    "source": payload.source,
+                    "source_ref": payload.source_ref,
+                    "status": idea.get("status"),
+                },
+                "delivered_at": idea.get("created_at"),
+            },
+        )
+
+    return idea
 
 
 @router.get("/ideas")
@@ -251,3 +345,34 @@ def patch_idea(
         raise HTTPException(status_code=404, detail=f"Idea '{idea_id}' not found")
 
     return idea
+
+
+@router.patch("/ideas/{idea_id}/triage")
+def triage_idea(
+    idea_id: UUID,
+    payload: IdeaTriagePatch,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("project_id"):
+        ensure_project_exists(conn, data["project_id"])
+    if should_stamp_triaged_at(data) and "triaged_at" not in data:
+        data["triaged_at"] = utc_now()
+
+    idea = update_row(conn, "ideas", {"id": idea_id}, data)
+    if idea is None:
+        raise HTTPException(status_code=404, detail=f"Idea '{idea_id}' not found")
+
+    return idea
+
+
+@router.post("/notification-events", status_code=201)
+def create_notification_event(
+    payload: NotificationEventCreate,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    if payload.project_id:
+        ensure_project_exists(conn, payload.project_id)
+
+    event = insert_row(conn, "notification_events", payload.model_dump(exclude_unset=True))
+    return event

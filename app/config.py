@@ -10,6 +10,7 @@ class Settings:
     auth_token: str
     api_host: str
     api_port: int
+    dashboard_cors_origins: tuple[str, ...]
 
 
 @lru_cache(maxsize=1)
@@ -27,4 +28,19 @@ def get_settings() -> Settings:
         auth_token=auth_token,
         api_host=os.getenv("ASHRISE_API_HOST", "0.0.0.0"),
         api_port=int(os.getenv("ASHRISE_API_PORT", "8080")),
+        dashboard_cors_origins=tuple(
+            origin
+            for origin in (
+                *(
+                    item.strip()
+                    for item in (os.getenv("ASHRISE_DASHBOARD_CORS_ORIGINS") or "").split(",")
+                    if item.strip()
+                ),
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:4173",
+                "http://127.0.0.1:4173",
+            )
+            if origin
+        ),
     )

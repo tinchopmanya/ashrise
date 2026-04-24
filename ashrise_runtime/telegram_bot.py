@@ -54,7 +54,7 @@ class TelegramBotClient:
         return self.call("getUpdates", payload) or []
 
     def send_message(self, chat_id: str | int, text: str):
-        self.call("sendMessage", {"chat_id": chat_id, "text": text})
+        return self.call("sendMessage", {"chat_id": chat_id, "text": text})
 
 
 def require_telegram_token() -> str:
@@ -223,6 +223,64 @@ def build_daily_summary(
         lines.extend(f"- {project_id}" for project_id in stale_projects)
 
     return "\n".join(lines)
+
+
+def summarize_notification_text(text: str, max_length: int = 140) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[: max_length - 3].rstrip()}..."
+
+
+def persist_notification_event(api: AshriseApiClient, payload: dict[str, Any]) -> None:
+    try:
+        api.create_notification_event(payload)
+    except Exception:
+        # Telegram delivery should not fail just because dashboard instrumentation could not persist.
+        return
+
+
+def send_message_with_notification_event(
+    api: AshriseApiClient,
+    telegram: TelegramBotClient,
+    *,
+    chat_id: str | int,
+    text: str,
+    message_type: str,
+    payload_summary: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    candidate_id: str | None = None,
+    run_id: str | None = None,
+    idea_id: str | None = None,
+    task_id: str | None = None,
+) -> Any:
+    message = telegram.send_message(chat_id, text)
+    external_ref = None
+    if isinstance(message, dict) and message.get("message_id") is not None:
+        external_ref = str(message["message_id"])
+
+    persist_notification_event(
+        api,
+        {
+            "channel": "telegram",
+            "direction": "outbound",
+            "project_id": project_id,
+            "candidate_id": candidate_id,
+            "run_id": run_id,
+            "idea_id": idea_id,
+            "task_id": task_id,
+            "message_type": message_type,
+            "external_ref": external_ref,
+            "delivery_status": "delivered",
+            "summary": summarize_notification_text(text),
+            "payload_summary": {
+                "chat_id": str(chat_id),
+                **(payload_summary or {}),
+            },
+            "delivered_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    return message
 
 
 def _next_scheduled_date(today: date, recurrence: str | None) -> date | None:
@@ -512,13 +570,36 @@ def run_polling(cwd: Path | None = None, poll_timeout: int = 30):
 def send_daily_summary(chat_id: str | int):
     token = require_telegram_token()
     with AshriseApiClient() as api, TelegramBotClient(token) as telegram:
-        telegram.send_message(chat_id, build_active_daily_summary(run_active_daily_cycle(api)))
+        cycle = run_active_daily_cycle(api)
+        text = build_active_daily_summary(cycle)
+        send_message_with_notification_event(
+            api,
+            telegram,
+            chat_id=chat_id,
+            text=text,
+            message_type="active-daily-summary",
+            payload_summary={
+                "today": cycle["today"],
+                "queue_size": cycle["queue_size"],
+                "processed": cycle["processed"],
+                "failures": cycle["failures"],
+                "promotion_ready": len(cycle["promotion_ready"]),
+            },
+        )
 
 
 def send_passive_daily_summary(chat_id: str | int):
     token = require_telegram_token()
     with AshriseApiClient() as api, TelegramBotClient(token) as telegram:
-        telegram.send_message(chat_id, build_daily_summary(api))
+        text = build_daily_summary(api)
+        send_message_with_notification_event(
+            api,
+            telegram,
+            chat_id=chat_id,
+            text=text,
+            message_type="passive-daily-summary",
+            payload_summary={"kind": "passive-daily-summary"},
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

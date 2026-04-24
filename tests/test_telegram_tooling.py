@@ -5,12 +5,14 @@ from ashrise_runtime.telegram_bot import (
     build_daily_summary,
     handle_command,
     run_active_daily_cycle,
+    send_message_with_notification_event,
 )
 
 
 class FakeTelegramApiClient:
     def __init__(self):
         self.created_ideas = []
+        self.notification_events = []
         self.queue_patches = []
 
     def get_project(self, project_id):
@@ -37,6 +39,10 @@ class FakeTelegramApiClient:
     def create_idea(self, payload):
         self.created_ideas.append(payload)
         return {"id": "idea-1", **payload}
+
+    def create_notification_event(self, payload):
+        self.notification_events.append(payload)
+        return {"id": "event-1", **payload}
 
     def list_candidates(self, category=None):
         rows = [
@@ -99,8 +105,7 @@ class FakeTelegramApiClient:
     def get_audit(self, project_id):
         if project_id == "ashrise":
             return None
-        old = datetime.now(UTC) - timedelta(days=10)
-        return {"created_at": old.isoformat()}
+        return {"created_at": "2026-04-10T00:00:00+00:00"}
 
     def run_agent(self, payload):
         if payload["target_id"] == "cand-advance":
@@ -229,3 +234,35 @@ def test_run_active_daily_cycle_resets_failed_queue_item_and_redacts_error():
     assert reset_patches
     assert all("[REDACTED]" in patch["notes"] for patch in reset_patches)
     assert all("tvly-real-key" not in patch["notes"] for patch in reset_patches)
+
+
+def test_send_message_with_notification_event_records_outbound_delivery():
+    class FakeTelegramClient:
+        def __init__(self):
+            self.messages = []
+
+        def send_message(self, chat_id, text):
+            self.messages.append((chat_id, text))
+            return {"message_id": 42}
+
+    api = FakeTelegramApiClient()
+    telegram = FakeTelegramClient()
+
+    send_message_with_notification_event(
+        api,
+        telegram,
+        chat_id=123,
+        text="Ashrise daily reminder",
+        message_type="active-daily-summary",
+        payload_summary={"processed": 3},
+    )
+
+    assert telegram.messages == [(123, "Ashrise daily reminder")]
+    assert api.notification_events
+    event = api.notification_events[0]
+    assert event["channel"] == "telegram"
+    assert event["direction"] == "outbound"
+    assert event["message_type"] == "active-daily-summary"
+    assert event["delivery_status"] == "delivered"
+    assert event["external_ref"] == "42"
+    assert event["payload_summary"]["processed"] == 3

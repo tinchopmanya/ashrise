@@ -17,6 +17,7 @@ JSON_COLUMNS = {
     "decisions": {"alternatives", "metadata"},
     "audit_reports": {"findings", "proposed_changes", "evidence_refs", "state_snapshot", "metadata"},
     "ideas": set(),
+    "tasks": set(),
     "vertical_candidates": {"kill_criteria", "kill_verdict", "metadata"},
     "candidate_research_reports": {
         "competitors_found",
@@ -30,6 +31,7 @@ JSON_COLUMNS = {
         "metadata",
     },
     "research_queue": set(),
+    "notification_events": {"payload_summary"},
 }
 
 
@@ -140,6 +142,18 @@ def ensure_project_exists(conn: psycopg.Connection, project_id: str):
     project = fetch_one(conn, "SELECT id FROM projects WHERE id = %s", (project_id,))
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+
+
+def ensure_idea_exists(conn: psycopg.Connection, idea_id):
+    idea = fetch_one(conn, "SELECT id FROM ideas WHERE id = %s", (idea_id,))
+    if idea is None:
+        raise HTTPException(status_code=404, detail=f"Idea '{idea_id}' not found")
+
+
+def ensure_candidate_exists(conn: psycopg.Connection, candidate_id):
+    candidate = fetch_one(conn, "SELECT id FROM vertical_candidates WHERE id = %s", (candidate_id,))
+    if candidate is None:
+        raise HTTPException(status_code=404, detail=f"Candidate '{candidate_id}' not found")
 
 
 def get_candidate_by_ref(conn: psycopg.Connection, candidate_ref: str):

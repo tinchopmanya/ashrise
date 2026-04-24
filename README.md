@@ -168,6 +168,191 @@ La respuesta del run incluye:
 
 Si Langfuse no esta disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`. Cuando el provider real esta activo, cada busqueda relevante deja observabilidad minima asociada a `run_id`, `target_type`, `target_id` y `prompt_ref`.
 
+## Dashboard F6B
+
+El repo ahora incluye la base interactiva de tasks, el primer corte del grafo visual de Project Detail, la ola de acciones seguras y el cierre read-only de Langfuse + Notifications/System sobre el dashboard ya estable:
+
+- Overview
+- Projects
+- Project Detail
+- Runs
+- Handoffs
+- Ideas
+- Research
+- Prompts & Traces
+- Notifications
+- System
+
+Los datos del dashboard salen solo de los endpoints agregados del backend:
+
+- `GET /dashboard/overview`
+- `GET /dashboard/projects`
+- `GET /dashboard/projects/{id}`
+- `GET /dashboard/projects/{id}/graph`
+- `GET /dashboard/runs/recent`
+- `GET /dashboard/runs/{id}`
+- `GET /dashboard/handoffs/open`
+- `GET /dashboard/ideas/overview`
+- `GET /dashboard/ideas/{id}/workspace`
+- `GET /dashboard/tasks/board`
+- `GET /dashboard/research/overview`
+- `GET /dashboard/langfuse/summary`
+- `GET /dashboard/langfuse/prompts`
+- `GET /dashboard/langfuse/traces`
+- `GET /dashboard/notifications`
+- `GET /dashboard/notifications/{id}`
+- `GET /dashboard/telegram/summary`
+- `GET /dashboard/system/health`
+- `GET /dashboard/system/jobs`
+- `GET /dashboard/system/integrations`
+- `POST /dashboard/actions/run-agent`
+- `POST /dashboard/actions/resolve-handoff`
+- `POST /dashboard/actions/requeue`
+- `PATCH /projects/{id}`
+- `PUT /state/{project_id}`
+- `GET /tasks`
+- `GET /tasks/{id}`
+- `POST /tasks`
+- `PATCH /tasks/{id}`
+- `DELETE /tasks/{id}`
+- `PATCH /ideas/{id}/triage`
+- `PATCH /candidates/{id}`
+- `POST /decisions`
+- `POST /decisions/{id}/supersede`
+
+F6B cierra la base read-only útil de Fase 6:
+
+- `Prompts & Traces` usa primero datos reales ya persistidos en `runs`
+- `Notifications` lee `notification_events` reales y muestra vacío honesto si todavía no hay eventos suficientes
+- `System` combina `health`, jobs recientes e integraciones usando señales reales disponibles
+- no duplica prompt bodies ni inventa actividad cuando todavía no existe persistida
+
+Por ahora el frontend vive como app Vite separada. Esto evita colisionar rutas UI (`/dashboard/...`) con los endpoints backend del mismo prefijo en la instancia FastAPI actual.
+
+Backend:
+
+```powershell
+make up
+docker compose exec --interactive=false -T api alembic upgrade head
+```
+
+Frontend:
+
+```powershell
+cd dashboard-ui
+Copy-Item .env.example .env -ErrorAction SilentlyContinue
+npm.cmd install
+npm.cmd run dev
+```
+
+La API permite CORS para la SPA local en:
+
+- `http://localhost:5173`
+- `http://127.0.0.1:5173`
+- `http://localhost:4173`
+- `http://127.0.0.1:4173`
+
+Si necesitás otro origen local, podés extenderlo con `ASHRISE_DASHBOARD_CORS_ORIGINS` como lista separada por comas.
+
+Variables esperadas por el frontend:
+
+- `VITE_API_BASE_URL`, default recomendado `http://localhost:8080`
+- `VITE_API_TOKEN`, default de desarrollo `dev-token`
+
+Build del frontend:
+
+```powershell
+cd dashboard-ui
+npm.cmd run build
+```
+
+Fase 1 sigue cerrada con esta superficie read-only:
+
+- Overview
+- Projects + Project Detail
+- Runs
+- Handoffs
+- Ideas inbox read-only
+- Research
+- System health
+- Decisions dentro de Project Detail
+
+Fase 2A abrio:
+
+- tabla `tasks` via Alembic
+- CRUD real de tasks (`/tasks`)
+- aggregates reales de ideas + task counts
+- workspace de idea con create/edit/delete/status para tasks
+- board de tasks con move actions explicitas en vez de drag and drop
+
+Fase 3A abre:
+
+- tab `Graph` dentro de `Project Detail`
+- `GET /dashboard/projects/{id}/graph`
+- nodo central de proyecto con satelites reales de runs, handoffs, decisions, audit, related research, ideas y tasks
+- panel lateral read-only con metadata util
+- layout radial determinista temporal sobre SVG nativo, con drag de nodos, pan y zoom
+
+Fase 4A abre:
+
+- `Run agent` desde `Project Detail` con confirmacion explicita
+- `Resolve` desde `Handoffs` con nota opcional y refetch real
+- `Triage` de ideas desde `/dashboard/ideas`
+- `Create decision` desde `Project Detail`
+- wrapper dashboard para `POST /agent/run` y resolucion segura de handoffs
+
+Se mantiene deliberadamente fuera de este turno:
+
+Fase 4B completa la superficie segura de `Research`:
+
+- `Run agent` sobre candidates desde `/dashboard/research`
+- `Requeue` de `research_queue` desde un wrapper dashboard seguro
+- `Promote candidate` desde `/dashboard/research` usando el flujo real existente `POST /candidates/{id}/promote`
+- refetch real, confirmacion explicita para `run-agent` y `promote`, y formularios sobrios para `requeue`
+
+Fase 5A abre una primera ola de edicion full minima y segura:
+
+- `Edit state` en `Project Detail` usando el contrato canonico `PUT /state/{project_id}`
+- edicion minima de metadata de proyecto usando `PATCH /projects/{id}` para `status`, `priority`, `importance`, `host_machine` y `progress_pct`
+- edicion minima de metadata de candidate desde `Research` usando `PATCH /candidates/{id}`
+- `Create decision` se mantiene y ahora se suma `supersede` explicito via `POST /decisions/{id}/supersede`
+- `kill_verdict` queda fuera de la UI de F5A porque en el modelo real es JSON y todavia no tiene una semantica chica y estable para exponerlo como formulario seguro
+
+Pendiente para cerrar mejor Fase 3:
+
+- evaluar si hace falta pasar de radial a force-directed sin d3
+- mini-graphs fuera de `Project Detail`
+
+Sigue fuera de alcance para F6B/Fase 7:
+
+- same-origin refactor
+- write actions adicionales fuera de las seguras ya agregadas
+- pagina global de Decisions
+
+Fase 2B cierra mejor el modulo Ideas & Tasks antes de graph:
+
+- arbol + detalle de ideas con seleccion activa mas clara y task counts mas visibles
+- subvista `Tasks` con split-arrows mas legibles entre idea raiz y tareas
+- board scoped a la idea seleccionada en `/dashboard/ideas`, en vez de mezclar tareas de otras ideas
+- orden persistente por `position` dentro del scope real de cada task (`idea_id` / `project_id` / `candidate_id` + `status`)
+- move actions explicitas (`Up`, `Down`, `Move left`, `Move right`) mantenidas por robustez; drag and drop sigue diferido
+- decision consolidada de modelo: `ideas.title` y `ideas.description` siguen derivados desde `raw_text`
+
+No agregue migracion nueva para `ideas.title` o `ideas.description` en F2B. La decision queda explicita: por ahora se mantiene la derivacion desde `raw_text` porque el flujo actual ya es usable y meter duplicacion persistida antes de graph agregaba riesgo innecesario.
+
+Explícitamente queda para Fase 7+:
+
+- actions write nuevas fuera de las ya validadas
+- notifications multi-canal más allá de Telegram
+- integraciones más profundas de sistema si aparecen nuevas señales persistidas
+
+Alcance y omisiones intencionales en este corte:
+
+- no hay same-origin serving; backend y `dashboard-ui` siguen separados
+- `Decisions` sigue dentro de Project Detail; no hay página global standalone todavía
+- no hay same-origin ni nuevas acciones write en Notifications/System
+- el módulo `Ideas` sigue derivando `title` desde `raw_text` porque el schema persistido no tiene `title` ni `description` propios
+
 ## Promocion de candidatas
 
 El agente marca senal de promocion cuando una candidata acumula 3 reportes consecutivos con:

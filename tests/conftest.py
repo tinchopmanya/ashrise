@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -14,6 +16,7 @@ TEST_DB_NAME = os.getenv("TEST_DATABASE_NAME", "ashrise_test")
 ADMIN_DATABASE_URL = os.getenv("TEST_ADMIN_DATABASE_URL", "postgresql://postgres:postgres@db:5432/postgres")
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", f"postgresql://postgres:postgres@db:5432/{TEST_DB_NAME}")
 TEST_TOKEN = "test-token"
+ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
 
 def recreate_test_database():
@@ -28,16 +31,25 @@ def recreate_test_database():
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
         conn.execute(SEED_SQL)
 
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
+    command.upgrade(config, "head")
+
 
 @pytest.fixture(scope="session")
-def app_client():
+def prepared_test_database():
     recreate_test_database()
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     os.environ["ASHRISE_TOKEN"] = TEST_TOKEN
     os.environ.pop("LANGFUSE_BASE_URL", None)
     os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
     os.environ.pop("LANGFUSE_SECRET_KEY", None)
+    yield
 
+
+@pytest.fixture(scope="session")
+def app_client(prepared_test_database):
     from app.config import get_settings
     from app.main import create_app
 
@@ -53,6 +65,6 @@ def auth_headers():
 
 
 @pytest.fixture
-def db_conn():
+def db_conn(prepared_test_database):
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True, row_factory=dict_row) as conn:
         yield conn

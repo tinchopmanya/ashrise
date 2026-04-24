@@ -9,11 +9,13 @@ node_modules/
 .next/
 dist/
 build/
+*.tsbuildinfo
 
 # Env
 .env
 .env.*
 .ashrise/
+tmp/
 
 # IDE
 .vscode/

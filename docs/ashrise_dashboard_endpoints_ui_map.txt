@@ -1,0 +1,477 @@
+ASHRISE DASHBOARD — MAPA DE ENDPOINTS, CAMPOS Y USO EN UI (v2)
+Fecha: 2026-04-21
+
+CAMBIOS VS v1
+- Se agrega la entidad `tasks` con FK a ideas/projects/candidates
+- Se agrega endpoint de grafo para Project Detail
+- Se consolida Ideas + Tasks en un único módulo con 3 subvistas
+- Se agrega endpoint de workspace que junta idea + tasks + relacionadas
+
+NOTACIÓN
+- CURRENT   = endpoints ya existentes o esperables por el core actual
+- PROPOSED  = endpoints recomendados para el dashboard
+- NEW       = entidad/endpoint nuevo que requiere migración
+- LANGFUSE  = datos que vienen por integración, no duplicados en Ashrise
+
+====================================================================
+1. OVERVIEW
+====================================================================
+
+UI SECTIONS
+- 6 KPI cards
+- Evolución semanal (line/area chart)
+- Runs recientes
+- Handoffs abiertos
+- Latest audits
+- Health panel
+
+CURRENT / AGGREGATABLE
+- GET /projects
+  id, name, kind, status, host_machine, priority, importance, size_scope, progress_pct
+- GET /state/{project_id}
+  current_focus, current_milestone, next_step, blockers, open_questions
+- GET /audit/{project_id}
+  verdict, confidence, summary, created_at
+- GET /research-queue?due=today
+  id, candidate_id, project_id, queue_type, priority, scheduled_for, status
+- GET /ideas?status=new
+  id, raw_text, source, created_at
+
+PROPOSED
+- GET /dashboard/overview
+  Devuelve en una sola llamada:
+    kpis:
+      active_projects, runs_today, open_handoffs, ideas_new,
+      queue_due_today, candidates_ready_to_promote, tasks_in_progress
+    latest_runs[5]
+    open_handoffs[3]
+    latest_audits[3]
+    weekly_evolution:
+      [{date, runs, handoffs_opened, handoffs_resolved, audits, ideas, tasks_done}]
+    health_summary:
+      api, db, langfuse, telegram_bot, cron_scheduler
+
+DISPLAY IN HTML
+- top KPI row con 6-7 cards y animación de count-up
+- línea temporal semanal con área apilada
+- runs recientes (últimas 5)
+- handoffs abiertos (últimos 3)
+- health chips
+
+====================================================================
+2. PROJECTS
+====================================================================
+
+CURRENT
+- GET /projects
+- GET /projects/{id}
+- GET /state/{project_id}
+- GET /audit/{project_id}
+- GET /runs/{project_id}?limit=N
+- GET /handoffs/{project_id}?status=open
+- GET /decisions/{project_id}
+
+PROJECT FIELDS
+  id, name, kind, parent_id, host_machine, status,
+  priority, importance, size_scope, progress_pct
+
+STATE FIELDS
+  current_focus, current_milestone, roadmap_ref, project_state_code,
+  next_step, blockers, open_questions, updated_at
+
+RUN FIELDS (mostrados)
+  id, agent, mode, status, summary, started_at, ended_at,
+  prompt_ref, langfuse_trace_id, files_touched, diff_stats,
+  next_step_proposed, metadata
+
+HANDOFF FIELDS
+  id, from_actor, to_actor, reason, message, status, created_at, resolved_at
+
+DECISION FIELDS
+  id, title, context, decision, consequences, status, created_at
+
+PROPOSED
+- GET /dashboard/projects
+    Lista con state summary, last_run_at, last_audit_at,
+    open_handoffs_count, tasks_counts{backlog,ready,progress,done}
+
+- GET /dashboard/projects/{id}
+    project, state, latest_audit, recent_runs[5],
+    open_handoffs, decisions[5], related_research[],
+    related_tasks[], related_ideas[]
+
+- GET /dashboard/projects/{id}/graph   [NEW]
+    Para la vista force-directed del detalle:
+    {
+      nodes: [
+        {id, type, label, color_hint, meta}
+          type in (project, run, handoff, decision, candidate,
+                   idea, task, audit)
+      ],
+      edges: [
+        {from, to, kind}
+          kind in (produced, resolved_by, relates_to,
+                   promoted_from, blocks, audits, touches)
+      ]
+    }
+
+PROPOSED EDIT
+- PATCH /projects/{id}
+- PUT   /state/{project_id}
+- POST  /state/{project_id}/blockers
+
+DISPLAY IN HTML
+- tabla de proyectos con progress bar animada
+- página detalle con:
+  * header: nombre, kind, status, host, progress ring
+  * tabs: Summary / State / Grafo / Runs / Handoffs / Decisions / Audit / Tasks
+  * grafo force-directed con proyecto al centro
+  * panel lateral con audit más reciente y próximos pasos
+
+====================================================================
+3. IDEAS & TASKS  [MÓDULO EXPANDIDO]
+====================================================================
+
+Este módulo fusiona el antiguo "Ideas" con la nueva entidad `tasks`.
+Tiene 3 subvistas: árbol, split-arrows, board kanban.
+
+CURRENT
+- GET  /ideas?status=
+- POST /ideas
+- PATCH /ideas/{id}
+
+IDEA FIELDS
+  id, project_id, raw_text, title, description, tags[],
+  source, source_ref, status, promoted_to, triage_notes,
+  parent_id, cross_links[], created_at, triaged_at
+
+NUEVA ENTIDAD: TASKS  [NEW]
+- GET    /tasks?idea_id=&project_id=&candidate_id=&status=
+- GET    /tasks/{id}
+- POST   /tasks
+- PATCH  /tasks/{id}
+- DELETE /tasks/{id}
+- POST   /tasks/{id}/promote
+
+TASK FIELDS
+  id, idea_id, project_id, candidate_id,
+  title, description,
+  status  ('backlog','ready','progress','blocked','done'),
+  priority, position, tags[],
+  promoted_to, created_at, updated_at, closed_at
+
+PROPOSED AGGREGATED
+- GET /dashboard/ideas/overview
+    counts por status, por source
+    lista de ideas con task_counts embebidos
+    cross_links detectados
+
+- GET /dashboard/ideas/{id}/workspace   [NEW]
+    idea + tasks[] + sibling_ideas_in_same_tag + suggested_next
+
+- GET /dashboard/tasks/board
+    all tasks grouped by status, filtrable por idea o project
+    devuelve posición ordenada para drag&drop
+
+DISPLAY IN HTML
+
+Subvista 1: "Árbol"
+- sidebar izquierda: árbol de ideas con expand/collapse
+- click en idea → panel central con descripción, tags, turns de conversación
+- chips de hashtags con color derivado del tag
+- composer inline para agregar turn (claude/codex/gemini/yo)
+
+Subvista 2: "Tareas" (split-arrows)
+- izquierda: círculo grande con la idea raíz y su contador de tareas
+- derecha: flechas numeradas con gradiente (cian→violeta→rosa) según index
+- cada flecha tiene título, descripción, status chip, edit inline, delete
+- al crear, entra al backlog del board
+- conector curvo del círculo a cada flecha
+
+Subvista 3: "Tablero" (kanban)
+- columnas: Backlog, Ready, In progress, Blocked, Done
+- drag&drop con feedback de columna activa
+- filtro por idea
+- contador por columna
+- color del borde izquierdo de la card según idea de origen
+
+====================================================================
+4. RUNS
+====================================================================
+
+CURRENT
+- GET /runs/{project_id}?limit=N
+- POST /runs
+- PATCH /runs/{id}
+
+FIELDS DISPLAYED
+  id, project_id, agent, agent_version, mode, prompt_ref,
+  worktree_path, started_at, ended_at, status, summary,
+  files_touched, diff_stats, next_step_proposed,
+  cost_usd, langfuse_trace_id, metadata
+
+LANGFUSE-RELEVANT
+  prompt_ref, langfuse_trace_id,
+  metadata.prompt_source, metadata.prompt_fallback,
+  metadata.langfuse_status, metadata.langfuse_error
+
+PROPOSED
+- GET /dashboard/runs/recent
+- GET /dashboard/runs/{id}
+- GET /dashboard/runs?project_id=&agent=&status=&mode=
+
+DISPLAY IN HTML
+- tabla con filtros, status chip animado para "running"
+- panel lateral con diff stats, files touched, trace button
+- link a Langfuse con deep-link al trace_id
+
+====================================================================
+5. HANDOFFS
+====================================================================
+
+CURRENT
+- GET /handoffs/{project_id}?status=open
+- POST /handoffs
+- PATCH /handoffs/{id}
+
+FIELDS DISPLAYED
+  id, project_id, from_run_id, from_actor, to_actor,
+  reason, message, context_refs, status,
+  created_at, resolved_at, resolved_by_run_id
+
+PROPOSED
+- GET /dashboard/handoffs/open
+- GET /dashboard/handoffs?to_actor=&status=
+
+DISPLAY IN HTML
+- inbox agrupado por to_actor (human:martin, codex, claude-code, auditor)
+- count por grupo con pulse si hay pending
+- click en handoff → drawer derecho con resolución
+
+====================================================================
+6. DECISIONS
+====================================================================
+
+CURRENT
+- GET /decisions/{project_id}
+- POST /decisions
+
+FIELDS DISPLAYED
+  id, project_id, title, context, decision, consequences,
+  alternatives, status, supersedes, created_by, created_at, metadata
+
+DISPLAY IN HTML
+- timeline vertical con ADR cards
+- filtro active / superseded
+- modal de creación
+
+====================================================================
+7. AUDITS
+====================================================================
+
+CURRENT
+- GET /audit/{project_id}
+
+FIELDS DISPLAYED
+  id, project_id, verdict, confidence, summary, findings,
+  proposed_changes, evidence_refs, roadmap_ref,
+  state_snapshot, created_at, metadata
+
+DISPLAY IN HTML
+- card con verdict badge (keep / adjust / pivot-lite / stop)
+- confidence ring animado (mismo patrón que Tenderlab ScoreRing)
+- lista de findings con peso (alto/medio/bajo)
+
+====================================================================
+8. RESEARCH (candidates)
+====================================================================
+
+CURRENT
+- GET /candidates
+- GET /candidates/{id}
+- POST /candidates
+- PATCH /candidates/{id}
+- GET /candidates/{id}/research
+- GET /research-queue?due=today
+- POST /agent/run
+- POST /candidates/{candidate_id}/promote
+
+CANDIDATE FIELDS
+  id, slug, name, category, parent_group,
+  hypothesis, problem_desc, status, priority, importance,
+  estimated_size, kill_verdict, promoted_to_project_id,
+  last_research_id, metadata
+
+REPORT FIELDS
+  id, candidate_id, verdict, confidence, summary,
+  competitors_found, market_signals, stack_findings,
+  kill_criteria_hits, ai_encroachment,
+  sub_gap_proposals, proposed_next_steps,
+  evidence_refs, prompt_ref, created_at, metadata
+
+QUEUE FIELDS
+  id, candidate_id, project_id, queue_type,
+  priority, scheduled_for, recurrence, status,
+  last_run_at, last_report_id, notes, created_at
+
+PROPOSED
+- GET /dashboard/research/overview
+- GET /dashboard/candidates/ready-to-promote
+- GET /dashboard/research/queue
+- GET /dashboard/research/reports/recent
+
+DISPLAY IN HTML
+- tabla de candidates con streak de advances (X/3) animado
+- readiness card para promoción con confidence ring
+- queue page con fechas de scheduled_for
+- panel de último report con findings
+
+====================================================================
+9. PROMPTS & TRACES (Langfuse integration)
+====================================================================
+
+CURRENT IN ASHRISE DB
+Ashrise DB no guarda el prompt body. Solo:
+  prompt_ref, langfuse_trace_id, metadata relacionados.
+
+LANGFUSE-RELEVANT FIELDS YA DISPLAYABLES
+  runs.prompt_ref, runs.langfuse_trace_id
+  runs.metadata.prompt_source, runs.metadata.prompt_fallback
+  runs.metadata.langfuse_status, runs.metadata.langfuse_error
+
+PROPOSED PROXY ENDPOINTS
+- GET /dashboard/langfuse/summary
+- GET /dashboard/langfuse/prompts
+- GET /dashboard/langfuse/traces
+
+DISPLAY IN HTML
+- prompt catalog (solo lectura, fuente de verdad en Langfuse)
+- tabla de traces recientes con deep-link
+- error panel con fallbacks recientes
+
+====================================================================
+10. TELEGRAM / NOTIFICATIONS
+====================================================================
+
+CURRENT
+- No existe tabla dedicada.
+
+PROPOSED NEW TABLE: notification_events   [NEW]
+  id, channel (telegram/whatsapp/email),
+  direction (outbound/inbound/system),
+  project_id, candidate_id, run_id, idea_id, task_id,
+  message_type, external_ref,
+  delivery_status (pending/delivered/failed/read),
+  summary, payload_summary, error_summary,
+  created_at, delivered_at
+
+PROPOSED ENDPOINTS
+- GET /dashboard/notifications
+- GET /dashboard/notifications/{id}
+- POST /notifications/test
+- GET /dashboard/telegram/summary
+
+DISPLAY IN HTML
+- tabla con direction icons
+- filtros por channel/status/project
+- drilldown con payload
+
+====================================================================
+11. SYSTEM / HEALTH
+====================================================================
+
+CURRENT
+- GET /health
+
+PROPOSED
+- GET /dashboard/system/health
+- GET /dashboard/system/jobs
+- GET /dashboard/system/integrations
+
+DISPLAY IN HTML
+- service status chips (healthy / degraded / down)
+- jobs recientes con duración
+- integración cards con last_sync_at
+
+====================================================================
+12. EDITING MODE
+====================================================================
+
+La versión final soporta edición de:
+- project metadata
+- project_state
+- handoffs (create + resolve)
+- decisions (create + supersede)
+- ideas triage
+- candidate metadata
+- candidate promotion
+- queue re-enqueue
+- run-agent triggers
+- tasks CRUD completo
+
+PATRONES UI
+- side drawers para creación/edición
+- inline edits para campos simples (title, next_step)
+- confirmación modal para destructivo (delete task, supersede decision)
+- audit trail visible post-save (quién, cuándo, qué cambió)
+
+====================================================================
+13. ENDPOINTS NUEVOS CONSOLIDADOS
+====================================================================
+
+Dashboard aggregates:
+  GET /dashboard/overview
+  GET /dashboard/projects
+  GET /dashboard/projects/{id}
+  GET /dashboard/projects/{id}/graph           [NEW]
+  GET /dashboard/runs/recent
+  GET /dashboard/runs/{id}
+  GET /dashboard/handoffs/open
+  GET /dashboard/research/overview
+  GET /dashboard/candidates/ready-to-promote
+  GET /dashboard/research/queue
+  GET /dashboard/research/reports/recent
+  GET /dashboard/ideas/overview
+  GET /dashboard/ideas/{id}/workspace          [NEW]
+  GET /dashboard/tasks/board                   [NEW]
+  GET /dashboard/langfuse/summary
+  GET /dashboard/langfuse/prompts
+  GET /dashboard/langfuse/traces
+  GET /dashboard/notifications
+  GET /dashboard/notifications/{id}
+  GET /dashboard/telegram/summary
+  GET /dashboard/system/health
+  GET /dashboard/system/jobs
+  GET /dashboard/system/integrations
+  GET /dashboard/activity-feed
+
+Tasks CRUD (nuevo dominio):
+  GET    /tasks
+  GET    /tasks/{id}
+  POST   /tasks
+  PATCH  /tasks/{id}
+  DELETE /tasks/{id}
+  POST   /tasks/{id}/promote
+
+Write endpoints:
+  PATCH  /projects/{id}
+  POST   /projects
+  POST   /state/{project_id}/blockers
+  PATCH  /ideas/{id}/triage
+  POST   /notifications/test
+  POST   /dashboard/actions/run-agent
+  POST   /dashboard/actions/requeue
+  POST   /dashboard/actions/resolve-handoff
+
+====================================================================
+14. ORDEN RECOMENDADO
+====================================================================
+
+1. Dashboard V1 read-only
+2. Ideas + Tasks CRUD + kanban
+3. Grafo de Project Detail
+4. Acciones seguras (run-agent, resolve, triage)
+5. Edición full (state, metadata, decisions)
+6. Notification events + Telegram page
+7. Prompts & traces
+8. Activity feed y polish
