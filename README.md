@@ -168,9 +168,9 @@ La respuesta del run incluye:
 
 Si Langfuse no esta disponible, el flujo no se rompe: el agente sigue corriendo y deja `langfuse_status='disabled'` o `trace-error`. Cuando el provider real esta activo, cada busqueda relevante deja observabilidad minima asociada a `run_id`, `target_type`, `target_id` y `prompt_ref`.
 
-## Dashboard F7A
+## Dashboard F7B
 
-El repo ahora incluye la base interactiva de tasks, el primer corte del grafo visual de Project Detail, la ola de acciones seguras, el cierre read-only de Langfuse + Notifications/System y un activity feed consolidado sobre el dashboard ya estable:
+El repo ahora incluye la base interactiva de tasks, el primer corte del grafo visual de Project Detail, la ola de acciones seguras, el cierre read-only de Langfuse + Notifications/System, un activity feed consolidado y saved views locales sobre Activity:
 
 - Overview
 - Activity
@@ -227,6 +227,13 @@ F7A abre el primer bloque de polish útil de Fase 7:
 - `Activity` consolida runs, handoffs, decisions, audits, ideas, tasks, research reports y notification events reales en una sola superficie read-only
 - los filtros simples (`kind`, `project_id`, `candidate_id`, `status`, `source`) persisten en la URL
 - el feed se construye solo con señales reales ya persistidas o derivables honestamente, sin activity sintética
+
+F7B suma utilidad diaria sobre esa misma superficie sin abrir backend nuevo:
+
+- `Save view` sobre `/dashboard/activity`
+- persistencia de views en `localStorage`
+- cargar, borrar y remarcar visualmente la view activa
+- rehidratación de filtros + URL al cargar una view guardada
 
 F6B había dejado cerrada la base read-only útil de Fase 6:
 
