@@ -9,6 +9,7 @@ from app.routers.agent import router as agent_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.health import router as health_router
 from app.routers.operations import router as operations_router
+from app.routers.radar import router as radar_router
 from app.routers.research import router as research_router
 from app.routers.tasks import router as tasks_router
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(operations_router)
     app.include_router(research_router)
     app.include_router(tasks_router)
+    app.include_router(radar_router)
     app.include_router(dashboard_router)
     app.include_router(agent_router)
 

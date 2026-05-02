@@ -32,6 +32,15 @@ JSON_COLUMNS = {
     },
     "research_queue": set(),
     "notification_events": {"payload_summary"},
+    "radar_candidates": {"scorecard", "gates", "next_research", "kill_criteria", "metadata"},
+    "radar_signals": {"raw_payload", "metadata"},
+    "radar_prompts": {"metadata"},
+    "radar_prompt_versions": {"output_schema", "variables_schema", "metadata"},
+    "radar_apply_logs": {"json_payload", "applied_changes"},
+    "radar_file_imports": {"payload_summary"},
+    "radar_prompt_runs": set(),
+    "radar_evidence": set(),
+    "radar_config": {"value"},
 }
 
 

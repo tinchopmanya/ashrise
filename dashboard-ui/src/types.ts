@@ -398,6 +398,222 @@ export type ActivityFeedFilters = {
   source?: string;
 };
 
+export type RadarCandidate = {
+  id: string;
+  slug: string;
+  name: string;
+  summary: string | null;
+  hypothesis: string | null;
+  focus: string | null;
+  scope: string | null;
+  maturity: string | null;
+  build_level: string | null;
+  time_horizon: string | null;
+  expected_return: string | null;
+  dominant_risk: string | null;
+  validation_mode: string | null;
+  evidence_requirement: string | null;
+  buyer_type: string | null;
+  preferred_channel: string | null;
+  initial_strategy: string | null;
+  scorecard: Record<string, unknown>;
+  gates: Record<string, unknown>;
+  decision_memo: string | null;
+  next_research: Record<string, unknown>;
+  kill_criteria: Record<string, unknown>;
+  verdict: string | null;
+  priority: number | null;
+  notes: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RadarCandidateInput = {
+  slug?: string;
+  name?: string;
+  summary?: string | null;
+  hypothesis?: string | null;
+  focus?: string | null;
+  scope?: string | null;
+  maturity?: string | null;
+  build_level?: string | null;
+  time_horizon?: string | null;
+  expected_return?: string | null;
+  dominant_risk?: string | null;
+  validation_mode?: string | null;
+  evidence_requirement?: string | null;
+  buyer_type?: string | null;
+  preferred_channel?: string | null;
+  initial_strategy?: string | null;
+  scorecard?: Record<string, unknown>;
+  gates?: Record<string, unknown>;
+  decision_memo?: string | null;
+  next_research?: Record<string, unknown>;
+  kill_criteria?: Record<string, unknown>;
+  verdict?: string | null;
+  priority?: number | null;
+  notes?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type RadarEvidence = {
+  id: string;
+  candidate_id: string;
+  kind: string;
+  title: string | null;
+  url: string | null;
+  source_name: string | null;
+  source_tier: string | null;
+  claim: string | null;
+  confidence: number | null;
+  date_accessed: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
+export type RadarEvidenceInput = {
+  kind: string;
+  title?: string | null;
+  url?: string | null;
+  source_name?: string | null;
+  source_tier?: string | null;
+  claim?: string | null;
+  confidence?: number | null;
+  date_accessed?: string | null;
+  notes?: string | null;
+};
+
+export type RadarApplyLog = {
+  id: string;
+  candidate_id: string | null;
+  prompt_id: string | null;
+  prompt_version_id: string | null;
+  source_type: "manual_paste" | "drag_drop" | "api" | "unknown";
+  recognized_format: string | null;
+  status: "applied" | "failed" | "dry_run";
+  model_used: string | null;
+  notes: string | null;
+  json_payload: Record<string, unknown>;
+  applied_changes: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+};
+
+export type RadarApplyResult = {
+  ok: boolean;
+  mode: string;
+  candidate_id: string | null;
+  updates_applied: string[];
+  evidence_created: number;
+  warnings: string[];
+  apply_log_id: string;
+  dry_run: boolean;
+  prompt_run_id: string | null;
+};
+
+export type RadarPrompt = {
+  id: string;
+  key: string;
+  title: string;
+  prompt_type: string;
+  description: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  latest_version?: number | null;
+  latest_version_is_active?: boolean | null;
+  latest_version_created_at?: string | null;
+};
+
+export type RadarPromptInput = {
+  key?: string;
+  title?: string;
+  prompt_type?: string;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type RadarPromptVersion = {
+  id: string;
+  prompt_id: string;
+  version: number;
+  body: string;
+  output_schema: Record<string, unknown>;
+  variables_schema: Record<string, unknown>;
+  filename_pattern: string | null;
+  changelog: string | null;
+  is_active: boolean;
+  langfuse_prompt_ref: string | null;
+  system_notes: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type RadarPromptVersionInput = {
+  version?: number | null;
+  body: string;
+  output_schema?: Record<string, unknown>;
+  variables_schema?: Record<string, unknown> | null;
+  filename_pattern?: string | null;
+  changelog?: string | null;
+  is_active?: boolean;
+  langfuse_prompt_ref?: string | null;
+  system_notes?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type RadarPromptRunStatus = "created" | "copied" | "waiting_import" | "applied" | "cancelled" | "failed";
+export type RadarPromptTargetTool = "chatgpt_web" | "claude_web" | "codex" | "other";
+
+export type RadarPromptRun = {
+  id: string;
+  prompt_id: string;
+  prompt_version_id: string;
+  candidate_id: string | null;
+  target_tool: RadarPromptTargetTool;
+  model_label: string | null;
+  rendered_prompt: string;
+  expected_filename: string | null;
+  status: RadarPromptRunStatus;
+  apply_log_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RadarPromptRenderInput = {
+  candidate_id?: string | null;
+  target_tool: RadarPromptTargetTool;
+  model_label?: string | null;
+  variables?: Record<string, unknown>;
+  notes?: string | null;
+};
+
+export type RadarPromptRenderResult = {
+  ok: boolean;
+  prompt_run_id: string;
+  rendered_prompt: string;
+  expected_filename: string;
+  target_tool: RadarPromptTargetTool;
+  warnings: string[];
+};
+
+export type RadarPromptRunPatchInput = {
+  status?: RadarPromptRunStatus;
+  model_label?: string | null;
+  notes?: string | null;
+  apply_log_id?: string | null;
+};
+
+export type RadarConfigItem = {
+  key: string;
+  value: unknown[] | Record<string, unknown>;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type NotificationEventRecord = {
   id: string;
   channel: string;

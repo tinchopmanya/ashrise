@@ -491,3 +491,315 @@ class ResearchQueuePatch(StrictModel):
     last_run_at: datetime | None = None
     last_report_id: UUID | None = None
     notes: str | None = None
+
+
+class RadarCandidateCreate(StrictModel):
+    slug: str
+    name: str
+    summary: str | None = None
+    hypothesis: str | None = None
+    focus: str | None = None
+    scope: str | None = None
+    maturity: str | None = "candidate"
+    build_level: str | None = None
+    time_horizon: str | None = None
+    expected_return: str | None = None
+    dominant_risk: str | None = None
+    validation_mode: str | None = None
+    evidence_requirement: str | None = None
+    buyer_type: str | None = None
+    preferred_channel: str | None = None
+    initial_strategy: str | None = None
+    scorecard: dict[str, Any] = Field(default_factory=dict)
+    gates: dict[str, Any] = Field(default_factory=dict)
+    decision_memo: str | None = None
+    next_research: dict[str, Any] = Field(default_factory=dict)
+    kill_criteria: dict[str, Any] = Field(default_factory=dict)
+    verdict: str | None = None
+    priority: int | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "slug",
+        "name",
+        "summary",
+        "hypothesis",
+        "focus",
+        "scope",
+        "maturity",
+        "build_level",
+        "time_horizon",
+        "expected_return",
+        "dominant_risk",
+        "validation_mode",
+        "evidence_requirement",
+        "buyer_type",
+        "preferred_channel",
+        "initial_strategy",
+        "decision_memo",
+        "verdict",
+        "notes",
+    )
+    @classmethod
+    def validate_candidate_text_fields(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("slug", "name")
+    @classmethod
+    def validate_required_candidate_text(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("priority")
+    @classmethod
+    def validate_candidate_priority(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("priority must be greater than or equal to 0")
+        return value
+
+
+class RadarCandidatePatch(StrictModel):
+    slug: str | None = None
+    name: str | None = None
+    summary: str | None = None
+    hypothesis: str | None = None
+    focus: str | None = None
+    scope: str | None = None
+    maturity: str | None = None
+    build_level: str | None = None
+    time_horizon: str | None = None
+    expected_return: str | None = None
+    dominant_risk: str | None = None
+    validation_mode: str | None = None
+    evidence_requirement: str | None = None
+    buyer_type: str | None = None
+    preferred_channel: str | None = None
+    initial_strategy: str | None = None
+    scorecard: dict[str, Any] | None = None
+    gates: dict[str, Any] | None = None
+    decision_memo: str | None = None
+    next_research: dict[str, Any] | None = None
+    kill_criteria: dict[str, Any] | None = None
+    verdict: str | None = None
+    priority: int | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    @field_validator(
+        "slug",
+        "name",
+        "summary",
+        "hypothesis",
+        "focus",
+        "scope",
+        "maturity",
+        "build_level",
+        "time_horizon",
+        "expected_return",
+        "dominant_risk",
+        "validation_mode",
+        "evidence_requirement",
+        "buyer_type",
+        "preferred_channel",
+        "initial_strategy",
+        "decision_memo",
+        "verdict",
+        "notes",
+    )
+    @classmethod
+    def validate_candidate_patch_text_fields(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("priority")
+    @classmethod
+    def validate_candidate_patch_priority(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("priority must be greater than or equal to 0")
+        return value
+
+
+class RadarSignalCreate(StrictModel):
+    candidate_id: UUID | None = None
+    source: str
+    title: str
+    summary: str | None = None
+    status: Literal["new", "triaged", "linked", "discarded"] = "new"
+    tags: list[str] = Field(default_factory=list)
+    raw_payload: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("source", "title", "summary")
+    @classmethod
+    def validate_signal_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("source", "title")
+    @classmethod
+    def validate_required_signal_text(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def validate_signal_tags(cls, value: list[str]) -> list[str]:
+        return normalize_tags(value) or []
+
+
+class RadarSignalPatch(StrictModel):
+    candidate_id: UUID | None = None
+    source: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    status: Literal["new", "triaged", "linked", "discarded"] | None = None
+    tags: list[str] | None = None
+    raw_payload: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+    @field_validator("source", "title", "summary")
+    @classmethod
+    def validate_signal_patch_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_signal_patch_tags(cls, value: list[str] | None) -> list[str] | None:
+        return normalize_tags(value)
+
+
+class RadarPromptCreate(StrictModel):
+    key: str
+    title: str
+    prompt_type: str
+    description: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("key", "title", "prompt_type", "description")
+    @classmethod
+    def validate_prompt_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("key", "title", "prompt_type")
+    @classmethod
+    def validate_required_prompt_text(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("must not be empty")
+        return value
+
+
+class RadarPromptPatch(StrictModel):
+    key: str | None = None
+    title: str | None = None
+    prompt_type: str | None = None
+    description: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    @field_validator("key", "title", "prompt_type", "description")
+    @classmethod
+    def validate_prompt_patch_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+
+class RadarPromptVersionCreate(StrictModel):
+    version: int | None = None
+    body: str
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    variables_schema: dict[str, Any] | None = None
+    filename_pattern: str | None = None
+    changelog: str | None = None
+    is_active: bool = False
+    langfuse_prompt_ref: str | None = None
+    system_notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("body")
+    @classmethod
+    def validate_prompt_body(cls, value: str) -> str:
+        normalized = normalize_text(value)
+        if normalized is None:
+            raise ValueError("body must not be empty")
+        return normalized
+
+    @field_validator("filename_pattern", "changelog", "langfuse_prompt_ref", "system_notes")
+    @classmethod
+    def validate_prompt_version_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("version")
+    @classmethod
+    def validate_prompt_version_number(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("version must be greater than or equal to 1")
+        return value
+
+
+class RadarPromptRender(StrictModel):
+    candidate_id: UUID | None = None
+    target_tool: Literal["chatgpt_web", "claude_web", "codex", "other"] = "chatgpt_web"
+    model_label: str | None = None
+    variables: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+
+    @field_validator("model_label", "notes")
+    @classmethod
+    def validate_prompt_render_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+
+class RadarPromptRunPatch(StrictModel):
+    status: Literal["created", "copied", "waiting_import", "applied", "cancelled", "failed"] | None = None
+    model_label: str | None = None
+    notes: str | None = None
+    apply_log_id: UUID | None = None
+
+    @field_validator("model_label", "notes")
+    @classmethod
+    def validate_prompt_run_patch_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+
+class RadarConfigPut(StrictModel):
+    value: dict[str, Any] | list[Any]
+    description: str | None = None
+
+    @field_validator("description")
+    @classmethod
+    def validate_config_description(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+
+class RadarApplyJsonPayload(StrictModel):
+    payload: dict[str, Any]
+
+
+class RadarEvidenceCreate(StrictModel):
+    kind: str
+    title: str | None = None
+    url: str | None = None
+    source_name: str | None = None
+    source_tier: str | None = None
+    claim: str | None = None
+    confidence: float | None = None
+    date_accessed: datetime | None = None
+    notes: str | None = None
+
+    @field_validator("kind", "title", "url", "source_name", "source_tier", "claim", "notes")
+    @classmethod
+    def validate_evidence_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("kind")
+    @classmethod
+    def validate_required_kind(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("kind must not be empty")
+        return value
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_confidence(cls, value: float | None) -> float | None:
+        if value is not None and not 0 <= value <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+        return value

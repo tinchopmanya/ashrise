@@ -12,7 +12,23 @@ import {
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
+  applyRadarJson,
+  createRadarCandidate,
+  createRadarCandidateEvidence,
+  createRadarPrompt,
+  createRadarPromptVersion,
+  cancelRadarPromptRun,
+  deleteRadarEvidence,
   getActivityFeed,
+  getRadarApplyLogs,
+  getRadarCandidate,
+  getRadarCandidateEvidence,
+  getRadarCandidates,
+  getRadarConfig,
+  getRadarPrompt,
+  getRadarPromptRuns,
+  getRadarPrompts,
+  getRadarPromptVersions,
   patchProject,
   createDecision,
   createTask,
@@ -38,13 +54,16 @@ import {
   getTelegramSummary,
   getSystemHealth,
   promoteCandidate,
+  markRadarPromptRunCopied,
   requeueResearchQueue,
+  renderRadarPromptVersion,
   resolveDashboardHandoff,
   runDashboardAgent,
   supersedeDecision,
   triageIdea,
   updateCandidate,
   updateProjectState,
+  updateRadarCandidate,
   updateTask,
 } from "./api";
 import type {
@@ -72,6 +91,15 @@ import type {
   ResearchQueueItem,
   RunDetail,
   RunSummary,
+  RadarApplyLog,
+  RadarApplyResult,
+  RadarCandidate,
+  RadarConfigItem,
+  RadarEvidence,
+  RadarPrompt,
+  RadarPromptRenderResult,
+  RadarPromptRun,
+  RadarPromptVersion,
   SystemHealthResponse,
   SystemIntegrationsResponse,
   SystemJobsResponse,
@@ -88,6 +116,7 @@ type IdeasSubview = "tree" | "tasks" | "board";
 const navItems = [
   { to: "/dashboard", label: "Overview", caption: "Core pulse" },
   { to: "/dashboard/activity", label: "Activity", caption: "One feed, real signals" },
+  { to: "/radar", label: "Radar", caption: "Discovery workbench" },
   { to: "/dashboard/projects", label: "Projects", caption: "Read-only fleet" },
   { to: "/dashboard/runs", label: "Runs", caption: "Recent activity" },
   { to: "/dashboard/handoffs", label: "Handoffs", caption: "Inbox by actor" },
@@ -124,6 +153,17 @@ const activityKindOptions = [
   { value: "research_report", label: "Research reports" },
   { value: "notification", label: "Notifications" },
 ] as const;
+
+const activityFilterKeys = ["kind", "project_id", "candidate_id", "status", "source", "q"] as const;
+const activitySavedViewsStorageKey = "ashrise.dashboard.activity.savedViews";
+
+type ActivitySavedView = {
+  id: string;
+  name: string;
+  filters: Record<string, string>;
+  queryString: string;
+  createdAt: string;
+};
 
 const healthLabels: Record<string, string> = {
   api: "API",
@@ -292,6 +332,60 @@ function activityItemSubject(item: ActivityFeedItem) {
   return "—";
 }
 
+function pickActivityFilters(searchParams: URLSearchParams) {
+  return Object.fromEntries(
+    activityFilterKeys.map((key) => [key, searchParams.get(key) ?? ""]),
+  ) as Record<(typeof activityFilterKeys)[number], string>;
+}
+
+function normalizeActivityQueryString(filters: Record<string, string>) {
+  const params = new URLSearchParams();
+  activityFilterKeys.forEach((key) => {
+    const value = filters[key];
+    if (value) {
+      params.set(key, value);
+    }
+  });
+  return params.toString();
+}
+
+function readActivitySavedViews() {
+  if (typeof window === "undefined") {
+    return [] as ActivitySavedView[];
+  }
+  try {
+    const raw = window.localStorage.getItem(activitySavedViewsStorageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is ActivitySavedView => {
+      return Boolean(
+        item &&
+          typeof item === "object" &&
+          typeof item.id === "string" &&
+          typeof item.name === "string" &&
+          typeof item.queryString === "string" &&
+          typeof item.createdAt === "string" &&
+          item.filters &&
+          typeof item.filters === "object",
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeActivitySavedViews(views: ActivitySavedView[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(activitySavedViewsStorageKey, JSON.stringify(views));
+}
+
 function isLiveStatus(status: string) {
   return status === "running";
 }
@@ -327,6 +421,10 @@ function truncateText(value: string, maxLength = 140) {
   return `${value.slice(0, maxLength - 1)}...`;
 }
 
+function prettyJson(value: unknown) {
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
 function AppShell({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle: string }) {
   const location = useLocation();
 
@@ -337,7 +435,7 @@ function AppShell({ children, title, subtitle }: { children: React.ReactNode; ti
           <div className="brand-mark">A</div>
             <div>
               <div className="eyebrow">Ashrise</div>
-              <h1>Dashboard F7A</h1>
+              <h1>Dashboard F7B</h1>
             </div>
           </div>
 
@@ -362,8 +460,8 @@ function AppShell({ children, title, subtitle }: { children: React.ReactNode; ti
         </nav>
 
         <div className="sidebar-note reveal" style={{ "--stagger": 9 } as React.CSSProperties}>
-          <span className="eyebrow">Phase 7A</span>
-          <p>Activity feed consolidado y filtros persistidos en URL para ver qué pasó en el sistema sin abrir cinco tabs en paralelo.</p>
+          <span className="eyebrow">Phase 7B</span>
+          <p>Activity suma saved views locales sobre filtros persistidos en URL para volver rápido a lecturas útiles del sistema.</p>
         </div>
       </aside>
 
@@ -4496,13 +4594,7 @@ function SystemPage() {
 
 function ActivityFeedPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters = {
-    kind: searchParams.get("kind") ?? "",
-    project_id: searchParams.get("project_id") ?? "",
-    candidate_id: searchParams.get("candidate_id") ?? "",
-    status: searchParams.get("status") ?? "",
-    source: searchParams.get("source") ?? "",
-  };
+  const filters = pickActivityFilters(searchParams);
   const deferredFilters = useDeferredValue(filters);
   const feedQuery = useQuery({
     queryKey: ["dashboard-activity-feed", deferredFilters],
@@ -4511,6 +4603,17 @@ function ActivityFeedPage() {
   const feed = feedQuery.data as ActivityFeedResponse | undefined;
   const items = feed?.items || [];
   const [selectedActivityKey, setSelectedActivityKey] = useState<string | null>(null);
+  const [savedViews, setSavedViews] = useState<ActivitySavedView[]>([]);
+  const [saveViewOpen, setSaveViewOpen] = useState(false);
+  const [viewName, setViewName] = useState("");
+  const [viewFeedback, setViewFeedback] = useState<string | null>(null);
+  const [viewError, setViewError] = useState<string | null>(null);
+  const currentQueryString = normalizeActivityQueryString(filters);
+  const activeSavedView = savedViews.find((view) => view.queryString === currentQueryString) || null;
+
+  useEffect(() => {
+    setSavedViews(readActivitySavedViews());
+  }, []);
 
   useEffect(() => {
     if (!items.length) {
@@ -4537,13 +4640,72 @@ function ActivityFeedPage() {
     } else {
       next.delete(key);
     }
+    setViewFeedback(null);
+    setViewError(null);
     setSearchParams(next, { replace: true });
   }
 
   function clearFilters() {
     const next = new URLSearchParams(searchParams);
-    Object.keys(filters).forEach((key) => next.delete(key));
+    activityFilterKeys.forEach((key) => next.delete(key));
+    setViewFeedback(null);
+    setViewError(null);
     setSearchParams(next, { replace: true });
+  }
+
+  function persistSavedViews(nextViews: ActivitySavedView[]) {
+    setSavedViews(nextViews);
+    writeActivitySavedViews(nextViews);
+  }
+
+  function handleSaveView() {
+    const trimmedName = viewName.trim();
+    if (!trimmedName) {
+      setViewError("Poné un nombre corto para la view.");
+      setViewFeedback(null);
+      return;
+    }
+    if (!currentQueryString) {
+      setViewError("Primero definí al menos un filtro para guardar una view.");
+      setViewFeedback(null);
+      return;
+    }
+
+    const nextView: ActivitySavedView = {
+      id: activeSavedView?.id || `activity-view-${Date.now()}`,
+      name: trimmedName,
+      filters: { ...filters },
+      queryString: currentQueryString,
+      createdAt: activeSavedView?.createdAt || new Date().toISOString(),
+    };
+    const existingIndex = savedViews.findIndex(
+      (view) => view.id === nextView.id || view.name.toLowerCase() === trimmedName.toLowerCase(),
+    );
+    const nextViews = [...savedViews];
+    if (existingIndex >= 0) {
+      nextViews[existingIndex] = nextView;
+      setViewFeedback("Saved view actualizada.");
+    } else {
+      nextViews.unshift(nextView);
+      setViewFeedback("Saved view guardada.");
+    }
+    persistSavedViews(nextViews);
+    setViewError(null);
+    setSaveViewOpen(false);
+    setViewName("");
+  }
+
+  function handleLoadView(view: ActivitySavedView) {
+    setViewFeedback(`View cargada: ${view.name}`);
+    setViewError(null);
+    setSearchParams(new URLSearchParams(view.queryString), { replace: false });
+  }
+
+  function handleDeleteView(viewId: string) {
+    const nextViews = savedViews.filter((view) => view.id !== viewId);
+    persistSavedViews(nextViews);
+    setViewFeedback("Saved view eliminada.");
+    setViewError(null);
   }
 
   if (feedQuery.isLoading) {
@@ -4593,15 +4755,77 @@ function ActivityFeedPage() {
         eyebrow="Read-only consolidated view"
         stagger={1}
         aside={
-          hasFilters ? (
-            <button className="secondary-button" type="button" onClick={clearFilters}>
-              Clear filters
+          <div className="saved-views-actions">
+            <button className="secondary-button" type="button" onClick={() => setSaveViewOpen((current) => !current)}>
+              {saveViewOpen ? "Close save" : "Save view"}
             </button>
-          ) : (
+            {hasFilters ? (
+              <button className="secondary-button" type="button" onClick={clearFilters}>
+                Clear filters
+              </button>
+            ) : null}
             <span className="meta-pill">{items.length} rows</span>
-          )
+          </div>
         }
       >
+        <div className="saved-views-shell">
+          <div className="saved-views-copy">
+            <div className="eyebrow">Saved views</div>
+            <p className="muted-copy">Persistidas en este browser con `localStorage`, para volver rápido a combinaciones útiles de filtros.</p>
+          </div>
+
+          {viewError ? <p className="form-error">{viewError}</p> : null}
+          {viewFeedback ? <p className="form-success">{viewFeedback}</p> : null}
+
+          {saveViewOpen ? (
+            <div className="saved-view-form">
+              <input
+                value={viewName}
+                onChange={(event) => setViewName(event.target.value)}
+                placeholder="Nombre de la view"
+              />
+              <button className="primary-button" type="button" onClick={handleSaveView}>
+                Save
+              </button>
+              <button className="secondary-button" type="button" onClick={() => {
+                setSaveViewOpen(false);
+                setViewError(null);
+              }}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+
+          {savedViews.length === 0 ? (
+            <p className="muted-copy">Todavía no guardaste views. Elegí filtros útiles y usá `Save view`.</p>
+          ) : (
+            <div className="saved-views-list">
+              {savedViews.map((view) => {
+                const isActive = activeSavedView?.id === view.id;
+                return (
+                  <article className={`saved-view-card ${isActive ? "active" : ""}`} key={view.id}>
+                    <div className="row spread">
+                      <div>
+                        <h4>{view.name}</h4>
+                        <p>{view.queryString ? `?${view.queryString}` : "Sin query string"}</p>
+                      </div>
+                      {isActive ? <span className="meta-pill">Active</span> : null}
+                    </div>
+                    <div className="saved-view-actions">
+                      <button className="secondary-button" type="button" onClick={() => handleLoadView(view)}>
+                        Load
+                      </button>
+                      <button className="danger-button" type="button" onClick={() => handleDeleteView(view.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         <div className="filters activity-filters">
           <select value={filters.kind} onChange={(event) => updateFilter("kind", event.target.value)}>
             {activityKindOptions.map((option) => (
@@ -4625,11 +4849,11 @@ function ActivityFeedPage() {
             onChange={(event) => updateFilter("status", event.target.value)}
             placeholder="status"
           />
-          <input
-            value={filters.source}
-            onChange={(event) => updateFilter("source", event.target.value)}
-            placeholder="source"
-          />
+            <input
+              value={filters.source}
+              onChange={(event) => updateFilter("source", event.target.value)}
+              placeholder="source"
+            />
         </div>
 
         {items.length === 0 ? (
@@ -4738,6 +4962,1795 @@ function ActivityFeedPage() {
         )}
       </Section>
     </AppShell>
+  );
+}
+
+const radarShellItems = [
+  { to: "/radar", label: "Overview" },
+  { to: "/radar/candidates", label: "Candidates" },
+  { to: "/radar/prompts", label: "Prompts" },
+  { to: "/radar/prompt-runs", label: "Prompt Runs" },
+  { to: "/radar/import", label: "Import JSON" },
+  { to: "/radar/apply-logs", label: "Apply Logs" },
+  { to: "/radar/settings", label: "Settings" },
+] as const;
+
+const radarStrategyFields = [
+  "focus",
+  "scope",
+  "maturity",
+  "build_level",
+  "time_horizon",
+  "expected_return",
+  "dominant_risk",
+  "validation_mode",
+  "evidence_requirement",
+  "buyer_type",
+  "preferred_channel",
+  "initial_strategy",
+] as const;
+
+const radarTaxonomyKeys = [...radarStrategyFields] as const;
+
+const radarCandidateFieldLabels: Record<(typeof radarStrategyFields)[number], string> = {
+  focus: "Focus",
+  scope: "Scope",
+  maturity: "Maturity",
+  build_level: "Build level",
+  time_horizon: "Time horizon",
+  expected_return: "Expected return",
+  dominant_risk: "Dominant risk",
+  validation_mode: "Validation mode",
+  evidence_requirement: "Evidence requirement",
+  buyer_type: "Buyer type",
+  preferred_channel: "Preferred channel",
+  initial_strategy: "Initial strategy",
+};
+
+function nullIfBlank(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function slugFromTitle(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+}
+
+function radarConfigValues(config: RadarConfigItem[] | undefined, key: string) {
+  const value = config?.find((item) => item.key === key)?.value;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function jsonFromTextarea(value: string, fallback: Record<string, unknown> = {}) {
+  if (!value.trim()) {
+    return fallback;
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("El valor debe ser un JSON object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function radarVariableNames(schema: Record<string, unknown> | undefined) {
+  if (!schema) {
+    return [];
+  }
+  const properties = schema.properties;
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    return Object.keys(properties as Record<string, unknown>);
+  }
+  return Object.keys(schema).filter((key) => !["type", "required", "description"].includes(key));
+}
+
+function RadarShell({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  const location = useLocation();
+
+  return (
+    <AppShell title={title} subtitle={subtitle}>
+      <nav className="radar-subnav" aria-label="Radar navigation">
+        {radarShellItems.map((item) => {
+          const isActive = location.pathname === item.to || (item.to !== "/radar" && location.pathname.startsWith(item.to));
+          return (
+            <Link className={isActive ? "active" : ""} key={item.to} to={item.to}>
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+      {children}
+    </AppShell>
+  );
+}
+
+function RadarOverviewPage() {
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const logsQuery = useQuery({ queryKey: ["radar-apply-logs", "overview"], queryFn: () => getRadarApplyLogs({ limit: "8" }) });
+
+  const candidates = candidatesQuery.data || [];
+  const logs = logsQuery.data || [];
+  const byVerdict = candidates.reduce<Record<string, number>>((acc, item) => {
+    const key = item.verdict || "no_verdict";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const byMaturity = candidates.reduce<Record<string, number>>((acc, item) => {
+    const key = item.maturity || "unknown";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const latestLog = logs[0];
+
+  return (
+    <RadarShell
+      title="Radar"
+      subtitle="Workbench manual para discovery: candidates, prompts, evidence, apply logs y JSON import sin watcher todavia."
+    >
+      <div className="kpi-grid">
+        <KpiCard label="Candidates" value={candidates.length} note="radar_candidates totales" stagger={0} />
+        <KpiCard label="Verdicts" value={Object.keys(byVerdict).length} note="agrupaciones con verdict" stagger={1} />
+        <KpiCard label="Maturity" value={Object.keys(byMaturity).length} note="estados de discovery usados" stagger={2} />
+        <KpiCard label="Recent applies" value={logs.length} note={latestLog ? `${latestLog.status} · ${formatDateTime(latestLog.created_at)}` : "sin apply logs"} stagger={3} />
+      </div>
+
+      <div className="dashboard-grid">
+        <Section title="Quick actions" eyebrow="Manual loop" stagger={1}>
+          <div className="hero-actions">
+            <Link className="primary-button" to="/radar/candidates?new=1">New Candidate</Link>
+            <Link className="secondary-button" to="/radar/import">Import JSON</Link>
+            <Link className="secondary-button" to="/radar/prompts">Prompts</Link>
+            <Link className="secondary-button" to="/radar/apply-logs">Apply Logs</Link>
+          </div>
+          <p className="panel-note">Fase 3 mantiene el flujo manual: copiar prompt, ejecutar en ChatGPT Web o Claude Web, pegar/arrastrar JSON y aplicar.</p>
+        </Section>
+
+        <Section title="Candidates by verdict" eyebrow="Honest aggregates" stagger={2}>
+          {candidatesQuery.isLoading ? (
+            <SkeletonBlock height={180} />
+          ) : Object.keys(byVerdict).length === 0 ? (
+            <StateScreen title="Sin candidates" body="Crea una candidate para empezar a poblar Radar." />
+          ) : (
+            <div className="stack-list compact">
+              {Object.entries(byVerdict).map(([key, count]) => (
+                <article className="list-card" key={key}>
+                  <div className="row spread">
+                    <h4>{key}</h4>
+                    <span className="meta-pill">{count}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Recent manual applies" eyebrow="Import history" stagger={3}>
+          {logsQuery.isLoading ? (
+            <SkeletonBlock height={220} />
+          ) : logs.length === 0 ? (
+            <StateScreen title="Sin apply logs" body="Cuando hagas dry-run o apply, el historial va a aparecer aca." />
+          ) : (
+            <div className="stack-list compact">
+              {logs.map((item) => (
+                <article className="list-card" key={item.id}>
+                  <div className="row spread">
+                    <h4>{item.model_used || item.recognized_format || "Manual apply"}</h4>
+                    <StatusChip value={item.status} />
+                  </div>
+                  <p>{item.error_message || item.notes || item.candidate_id || "Apply log sin detalle extra."}</p>
+                  <div className="meta-row">
+                    <span>{item.source_type}</span>
+                    <span>{formatDateTime(item.created_at)}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Candidates by maturity" eyebrow="Discovery stage" stagger={4}>
+          {Object.keys(byMaturity).length === 0 ? (
+            <StateScreen title="Sin maturity" body="Todavia no hay candidates con maturity persistida." />
+          ) : (
+            <div className="stack-list compact">
+              {Object.entries(byMaturity).map(([key, count]) => (
+                <article className="list-card" key={key}>
+                  <div className="row spread">
+                    <h4>{key}</h4>
+                    <span className="meta-pill">{count}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+      </div>
+    </RadarShell>
+  );
+}
+
+function RadarCandidatesPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [newCandidate, setNewCandidate] = useState({ name: "", slug: "", hypothesis: "", focus: "", scope: "", maturity: "candidate" });
+  const [filters, setFilters] = useState({
+    q: searchParams.get("q") || "",
+    verdict: searchParams.get("verdict") || "",
+    focus: searchParams.get("focus") || "",
+    scope: searchParams.get("scope") || "",
+    maturity: searchParams.get("maturity") || "",
+    dominant_risk: searchParams.get("dominant_risk") || "",
+  });
+
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const configQuery = useQuery({ queryKey: ["radar-config"], queryFn: getRadarConfig });
+  const createMutation = useMutation({
+    mutationFn: () =>
+      createRadarCandidate({
+        slug: newCandidate.slug || slugFromTitle(newCandidate.name),
+        name: newCandidate.name,
+        hypothesis: nullIfBlank(newCandidate.hypothesis),
+        focus: nullIfBlank(newCandidate.focus),
+        scope: nullIfBlank(newCandidate.scope),
+        maturity: nullIfBlank(newCandidate.maturity),
+      }),
+    onSuccess: (candidate) => {
+      queryClient.invalidateQueries({ queryKey: ["radar-candidates"] });
+      navigate(`/radar/candidates/${candidate.id}`);
+    },
+  });
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        next.set(key, value);
+      }
+    });
+    setSearchParams(next, { replace: true });
+  }, [filters, setSearchParams]);
+
+  const candidates = candidatesQuery.data || [];
+  const config = configQuery.data || [];
+  const q = filters.q.trim().toLowerCase();
+  const filteredCandidates = candidates.filter((candidate) => {
+    const haystack = [candidate.name, candidate.slug, candidate.summary, candidate.hypothesis].filter(Boolean).join(" ").toLowerCase();
+    return (
+      (!q || haystack.includes(q)) &&
+      (!filters.verdict || candidate.verdict === filters.verdict) &&
+      (!filters.focus || candidate.focus === filters.focus) &&
+      (!filters.scope || candidate.scope === filters.scope) &&
+      (!filters.maturity || candidate.maturity === filters.maturity) &&
+      (!filters.dominant_risk || candidate.dominant_risk === filters.dominant_risk)
+    );
+  });
+
+  return (
+    <RadarShell title="Radar Candidates" subtitle="Lista operativa de oportunidades de discovery, separada de vertical_candidates de Ashrise.">
+      <Section title="New Candidate" eyebrow="Manual create" stagger={0}>
+        <form
+          className="radar-form-grid"
+          onSubmit={(event) => {
+            event.preventDefault();
+            createMutation.mutate();
+          }}
+        >
+          <label>
+            Name
+            <input value={newCandidate.name} onChange={(event) => setNewCandidate((current) => ({ ...current, name: event.target.value, slug: current.slug || slugFromTitle(event.target.value) }))} required />
+          </label>
+          <label>
+            Slug
+            <input value={newCandidate.slug} onChange={(event) => setNewCandidate((current) => ({ ...current, slug: event.target.value }))} required />
+          </label>
+          <label>
+            Focus
+            <select value={newCandidate.focus} onChange={(event) => setNewCandidate((current) => ({ ...current, focus: event.target.value }))}>
+              <option value="">Sin focus</option>
+              {radarConfigValues(config, "focus").map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            Scope
+            <select value={newCandidate.scope} onChange={(event) => setNewCandidate((current) => ({ ...current, scope: event.target.value }))}>
+              <option value="">Sin scope</option>
+              {radarConfigValues(config, "scope").map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            Maturity
+            <select value={newCandidate.maturity} onChange={(event) => setNewCandidate((current) => ({ ...current, maturity: event.target.value }))}>
+              {radarConfigValues(config, "maturity").map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="wide-field">
+            Hypothesis
+            <textarea value={newCandidate.hypothesis} onChange={(event) => setNewCandidate((current) => ({ ...current, hypothesis: event.target.value }))} />
+          </label>
+          <div className="hero-actions wide-field">
+            <button className="primary-button" type="submit" disabled={createMutation.isPending}>
+              {createMutation.isPending ? "Creating..." : "Create candidate"}
+            </button>
+            {createMutation.error instanceof Error ? <span className="form-error">{createMutation.error.message}</span> : null}
+          </div>
+        </form>
+      </Section>
+
+      <Section title="Candidates" eyebrow="Search + filters" stagger={1} aside={<span className="meta-pill">{filteredCandidates.length} / {candidates.length}</span>}>
+        <div className="filters">
+          <input placeholder="Search name, slug, hypothesis..." value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} />
+          <input placeholder="verdict" value={filters.verdict} onChange={(event) => setFilters((current) => ({ ...current, verdict: event.target.value }))} />
+          {(["focus", "scope", "maturity", "dominant_risk"] as const).map((key) => (
+            <select key={key} value={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))}>
+              <option value="">{radarCandidateFieldLabels[key]}</option>
+              {radarConfigValues(config, key).map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          ))}
+        </div>
+
+        {candidatesQuery.isLoading ? (
+          <SkeletonBlock height={360} />
+        ) : filteredCandidates.length === 0 ? (
+          <StateScreen title="Sin candidates para estos filtros" body="Ajusta la busqueda o crea una nueva candidate." />
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Slug</th>
+                  <th>Verdict</th>
+                  <th>Focus</th>
+                  <th>Scope</th>
+                  <th>Maturity</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCandidates.map((candidate) => (
+                  <tr key={candidate.id}>
+                    <td><Link to={`/radar/candidates/${candidate.id}`}>{candidate.name}</Link></td>
+                    <td>{candidate.slug}</td>
+                    <td>{candidate.verdict || "—"}</td>
+                    <td>{candidate.focus || "—"}</td>
+                    <td>{candidate.scope || "—"}</td>
+                    <td>{candidate.maturity || "—"}</td>
+                    <td>{formatDateTime(candidate.updated_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+    </RadarShell>
+  );
+}
+
+function RadarCandidateDetailPage() {
+  const { candidateId = "" } = useParams();
+  const queryClient = useQueryClient();
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [evidenceForm, setEvidenceForm] = useState({ kind: "web_note", title: "", claim: "", url: "", source_name: "", confidence: "" });
+
+  const candidateQuery = useQuery({ queryKey: ["radar-candidate", candidateId], queryFn: () => getRadarCandidate(candidateId), enabled: Boolean(candidateId) });
+  const evidenceQuery = useQuery({ queryKey: ["radar-evidence", candidateId], queryFn: () => getRadarCandidateEvidence(candidateId), enabled: Boolean(candidateId) });
+  const logsQuery = useQuery({ queryKey: ["radar-apply-logs", candidateId], queryFn: () => getRadarApplyLogs({ candidate_id: candidateId, limit: "8" }), enabled: Boolean(candidateId) });
+  const configQuery = useQuery({ queryKey: ["radar-config"], queryFn: getRadarConfig });
+
+  const candidate = candidateQuery.data;
+  const evidence = evidenceQuery.data || [];
+  const logs = logsQuery.data || [];
+  const config = configQuery.data || [];
+
+  useEffect(() => {
+    if (!candidate) {
+      return;
+    }
+    setForm({
+      name: candidate.name || "",
+      slug: candidate.slug || "",
+      summary: candidate.summary || "",
+      hypothesis: candidate.hypothesis || "",
+      verdict: candidate.verdict || "",
+      priority: candidate.priority === null ? "" : String(candidate.priority),
+      notes: candidate.notes || "",
+      decision_memo: candidate.decision_memo || "",
+      ...Object.fromEntries(radarStrategyFields.map((field) => [field, candidate[field] || ""])),
+    });
+  }, [candidate]);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateRadarCandidate(candidateId, {
+        name: form.name,
+        slug: form.slug,
+        summary: nullIfBlank(form.summary || ""),
+        hypothesis: nullIfBlank(form.hypothesis || ""),
+        verdict: nullIfBlank(form.verdict || ""),
+        priority: form.priority ? Number(form.priority) : null,
+        notes: nullIfBlank(form.notes || ""),
+        decision_memo: nullIfBlank(form.decision_memo || ""),
+        ...Object.fromEntries(radarStrategyFields.map((field) => [field, nullIfBlank(form[field] || "")])),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["radar-candidate", candidateId] });
+      queryClient.invalidateQueries({ queryKey: ["radar-candidates"] });
+    },
+  });
+
+  const createEvidenceMutation = useMutation({
+    mutationFn: () =>
+      createRadarCandidateEvidence(candidateId, {
+        kind: evidenceForm.kind,
+        title: nullIfBlank(evidenceForm.title),
+        claim: nullIfBlank(evidenceForm.claim),
+        url: nullIfBlank(evidenceForm.url),
+        source_name: nullIfBlank(evidenceForm.source_name),
+        confidence: evidenceForm.confidence ? Number(evidenceForm.confidence) : null,
+      }),
+    onSuccess: () => {
+      setEvidenceForm({ kind: "web_note", title: "", claim: "", url: "", source_name: "", confidence: "" });
+      queryClient.invalidateQueries({ queryKey: ["radar-evidence", candidateId] });
+    },
+  });
+
+  const deleteEvidenceMutation = useMutation({
+    mutationFn: deleteRadarEvidence,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["radar-evidence", candidateId] }),
+  });
+
+  if (candidateQuery.isLoading) {
+    return (
+      <RadarShell title="Radar Candidate" subtitle="Detalle de candidate Radar.">
+        <SkeletonBlock height={540} />
+      </RadarShell>
+    );
+  }
+
+  if (candidateQuery.isError || !candidate) {
+    return (
+      <RadarShell title="Radar Candidate" subtitle="Detalle de candidate Radar.">
+        <StateScreen title="Candidate no encontrada" body={candidateQuery.error?.message || "No pude cargar esta candidate."} tone="bad" />
+      </RadarShell>
+    );
+  }
+
+  return (
+    <RadarShell title={candidate.name} subtitle="Summary, strategy, evaluation, evidence y apply logs de discovery.">
+      <div className="dashboard-grid">
+        <Section title="Summary + Strategy" eyebrow={candidate.slug} stagger={0}>
+          <form
+            className="radar-form-grid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              updateMutation.mutate();
+            }}
+          >
+            <label>Name<input value={form.name || ""} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required /></label>
+            <label>Slug<input value={form.slug || ""} onChange={(event) => setForm((current) => ({ ...current, slug: event.target.value }))} required /></label>
+            <label>Verdict<input value={form.verdict || ""} onChange={(event) => setForm((current) => ({ ...current, verdict: event.target.value }))} placeholder="kill / iterate / advance" /></label>
+            <label>Priority<input type="number" min="0" value={form.priority || ""} onChange={(event) => setForm((current) => ({ ...current, priority: event.target.value }))} /></label>
+            <label className="wide-field">Summary<textarea value={form.summary || ""} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} /></label>
+            <label className="wide-field">Hypothesis<textarea value={form.hypothesis || ""} onChange={(event) => setForm((current) => ({ ...current, hypothesis: event.target.value }))} /></label>
+            {radarStrategyFields.map((field) => (
+              <label key={field}>
+                {radarCandidateFieldLabels[field]}
+                <select value={form[field] || ""} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))}>
+                  <option value="">Sin valor</option>
+                  {radarConfigValues(config, field).map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+            ))}
+            <label className="wide-field">Notes<textarea value={form.notes || ""} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <div className="hero-actions wide-field">
+              <button className="primary-button" type="submit" disabled={updateMutation.isPending}>{updateMutation.isPending ? "Saving..." : "Save candidate"}</button>
+              <Link className="secondary-button" to={`/radar/import?candidate_id=${candidate.id}`}>Import JSON for this candidate</Link>
+              {updateMutation.isSuccess ? <span className="form-success">Saved.</span> : null}
+              {updateMutation.error instanceof Error ? <span className="form-error">{updateMutation.error.message}</span> : null}
+            </div>
+          </form>
+        </Section>
+
+        <Section title="Evaluation" eyebrow="Applied JSON state" stagger={1}>
+          <label>
+            Decision memo
+            <textarea value={form.decision_memo || ""} onChange={(event) => setForm((current) => ({ ...current, decision_memo: event.target.value }))} />
+          </label>
+          <div className="json-block-group">
+            <div><span className="eyebrow">scorecard</span><pre className="json-block">{prettyJson(candidate.scorecard)}</pre></div>
+            <div><span className="eyebrow">gates</span><pre className="json-block">{prettyJson(candidate.gates)}</pre></div>
+            <div><span className="eyebrow">next_research</span><pre className="json-block">{prettyJson(candidate.next_research)}</pre></div>
+            <div><span className="eyebrow">kill_criteria</span><pre className="json-block">{prettyJson(candidate.kill_criteria)}</pre></div>
+          </div>
+        </Section>
+
+        <Section title="Evidence" eyebrow="Manual + imported" stagger={2} aside={<span className="meta-pill">{evidence.length}</span>}>
+          <form
+            className="radar-form-grid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createEvidenceMutation.mutate();
+            }}
+          >
+            <label>Kind<input value={evidenceForm.kind} onChange={(event) => setEvidenceForm((current) => ({ ...current, kind: event.target.value }))} required /></label>
+            <label>Title<input value={evidenceForm.title} onChange={(event) => setEvidenceForm((current) => ({ ...current, title: event.target.value }))} /></label>
+            <label>URL<input value={evidenceForm.url} onChange={(event) => setEvidenceForm((current) => ({ ...current, url: event.target.value }))} /></label>
+            <label>Source<input value={evidenceForm.source_name} onChange={(event) => setEvidenceForm((current) => ({ ...current, source_name: event.target.value }))} /></label>
+            <label>Confidence<input type="number" min="0" max="1" step="0.05" value={evidenceForm.confidence} onChange={(event) => setEvidenceForm((current) => ({ ...current, confidence: event.target.value }))} /></label>
+            <label className="wide-field">Claim<textarea value={evidenceForm.claim} onChange={(event) => setEvidenceForm((current) => ({ ...current, claim: event.target.value }))} /></label>
+            <div className="hero-actions wide-field"><button className="secondary-button" type="submit" disabled={createEvidenceMutation.isPending}>Add Evidence</button></div>
+          </form>
+          {evidenceQuery.isLoading ? (
+            <SkeletonBlock height={180} />
+          ) : evidence.length === 0 ? (
+            <StateScreen title="Sin evidence" body="Aca va a aparecer evidence importada o agregada manualmente." />
+          ) : (
+            <div className="stack-list compact">
+              {evidence.map((item) => (
+                <article className="list-card" key={item.id}>
+                  <div className="row spread">
+                    <h4>{item.title || item.kind}</h4>
+                    <button className="ghost-button" type="button" onClick={() => deleteEvidenceMutation.mutate(item.id)}>Delete</button>
+                  </div>
+                  <p>{item.claim || item.notes || "Sin claim."}</p>
+                  <div className="meta-row">
+                    <span>{item.source_name || "source n/a"}</span>
+                    <span>{item.confidence !== null ? `confidence ${item.confidence}` : "sin confidence"}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Apply Logs" eyebrow="Candidate scoped" stagger={3} aside={<span className="meta-pill">{logs.length}</span>}>
+          {logsQuery.isLoading ? (
+            <SkeletonBlock height={180} />
+          ) : logs.length === 0 ? (
+            <StateScreen title="Sin apply logs" body="Todavia no hay dry-runs ni applies asociados a esta candidate." />
+          ) : (
+            <div className="stack-list compact">
+              {logs.map((item) => (
+                <article className="list-card" key={item.id}>
+                  <div className="row spread">
+                    <h4>{item.model_used || item.recognized_format || "Apply"}</h4>
+                    <StatusChip value={item.status} />
+                  </div>
+                  <p>{item.error_message || item.notes || "Sin error."}</p>
+                  <div className="meta-row"><span>{item.source_type}</span><span>{formatDateTime(item.created_at)}</span></div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+      </div>
+    </RadarShell>
+  );
+}
+
+function RadarPromptsPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [filters, setFilters] = useState({ q: "", prompt_type: "", active: "" });
+  const [newPrompt, setNewPrompt] = useState({ key: "", title: "", prompt_type: "discovery", description: "" });
+  const promptsQuery = useQuery({ queryKey: ["radar-prompts"], queryFn: getRadarPrompts });
+  const createMutation = useMutation({
+    mutationFn: () =>
+      createRadarPrompt({
+        key: newPrompt.key || slugFromTitle(newPrompt.title),
+        title: newPrompt.title,
+        prompt_type: newPrompt.prompt_type,
+        description: nullIfBlank(newPrompt.description),
+      }),
+    onSuccess: (prompt) => {
+      queryClient.invalidateQueries({ queryKey: ["radar-prompts"] });
+      navigate(`/radar/prompts/${prompt.id}`);
+    },
+  });
+
+  const prompts = promptsQuery.data || [];
+  const promptTypes = Array.from(new Set(prompts.map((item) => item.prompt_type))).sort();
+  const q = filters.q.trim().toLowerCase();
+  const filteredPrompts = prompts.filter((prompt) => {
+    const tags = Array.isArray(prompt.metadata?.tags) ? prompt.metadata.tags.join(" ") : "";
+    const activeMatches =
+      !filters.active ||
+      (filters.active === "active" ? prompt.latest_version_is_active === true : prompt.latest_version_is_active !== true);
+    return (
+      (!q || [prompt.key, prompt.title, prompt.description, tags].filter(Boolean).join(" ").toLowerCase().includes(q)) &&
+      (!filters.prompt_type || prompt.prompt_type === filters.prompt_type) &&
+      activeMatches
+    );
+  });
+
+  return (
+    <RadarShell title="Radar Prompts" subtitle="Biblioteca practica para copiar prompts y ejecutar fuera de API en ChatGPT Web o Claude Web.">
+      <Section title="New Prompt" eyebrow="Prompt library" stagger={0}>
+        <form
+          className="radar-form-grid"
+          onSubmit={(event) => {
+            event.preventDefault();
+            createMutation.mutate();
+          }}
+        >
+          <label>Title<input value={newPrompt.title} onChange={(event) => setNewPrompt((current) => ({ ...current, title: event.target.value, key: current.key || slugFromTitle(event.target.value) }))} required /></label>
+          <label>Key<input value={newPrompt.key} onChange={(event) => setNewPrompt((current) => ({ ...current, key: event.target.value }))} required /></label>
+          <label>Type<input value={newPrompt.prompt_type} onChange={(event) => setNewPrompt((current) => ({ ...current, prompt_type: event.target.value }))} required /></label>
+          <label className="wide-field">Description<textarea value={newPrompt.description} onChange={(event) => setNewPrompt((current) => ({ ...current, description: event.target.value }))} /></label>
+          <div className="hero-actions wide-field">
+            <button className="primary-button" type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? "Creating..." : "Create prompt"}</button>
+            {createMutation.error instanceof Error ? <span className="form-error">{createMutation.error.message}</span> : null}
+          </div>
+        </form>
+      </Section>
+
+      <Section title="Prompts" eyebrow="Search + filters" stagger={1} aside={<span className="meta-pill">{filteredPrompts.length} / {prompts.length}</span>}>
+        <div className="filters">
+          <input placeholder="Search prompts..." value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} />
+          <select value={filters.prompt_type} onChange={(event) => setFilters((current) => ({ ...current, prompt_type: event.target.value }))}>
+            <option value="">All types</option>
+            {promptTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <select value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value }))}>
+            <option value="">Any version state</option>
+            <option value="active">Latest active</option>
+            <option value="inactive">No active latest</option>
+          </select>
+        </div>
+        {promptsQuery.isLoading ? (
+          <SkeletonBlock height={340} />
+        ) : filteredPrompts.length === 0 ? (
+          <StateScreen title="Sin prompts" body="Crea un prompt para empezar a reducir friccion con ChatGPT Web." />
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Type</th><th>Tags</th><th>Latest</th><th>Updated</th></tr></thead>
+              <tbody>
+                {filteredPrompts.map((prompt) => {
+                  const tags = Array.isArray(prompt.metadata?.tags) ? prompt.metadata.tags.join(", ") : "—";
+                  return (
+                    <tr key={prompt.id}>
+                      <td><Link to={`/radar/prompts/${prompt.id}`}>{prompt.title}</Link></td>
+                      <td>{prompt.prompt_type}</td>
+                      <td>{tags}</td>
+                      <td>{prompt.latest_version ? `v${prompt.latest_version}${prompt.latest_version_is_active ? " active" : ""}` : "—"}</td>
+                      <td>{formatDateTime(prompt.updated_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+    </RadarShell>
+  );
+}
+
+function RadarPromptDetailPageLegacy() {
+  const { promptId = "" } = useParams();
+  const queryClient = useQueryClient();
+  const [selectedVersionId, setSelectedVersionId] = useState("");
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [versionForm, setVersionForm] = useState({ body: "", output_schema: "{\n  \"_radar_export\": true\n}", filename_pattern: "radar_candidate_*.json", changelog: "", is_active: true });
+
+  const promptQuery = useQuery({ queryKey: ["radar-prompt", promptId], queryFn: () => getRadarPrompt(promptId), enabled: Boolean(promptId) });
+  const versionsQuery = useQuery({ queryKey: ["radar-prompt-versions", promptId], queryFn: () => getRadarPromptVersions(promptId), enabled: Boolean(promptId) });
+  const createVersionMutation = useMutation({
+    mutationFn: () =>
+      createRadarPromptVersion(promptId, {
+        body: versionForm.body,
+        output_schema: jsonFromTextarea(versionForm.output_schema),
+        filename_pattern: nullIfBlank(versionForm.filename_pattern),
+        changelog: nullIfBlank(versionForm.changelog),
+        is_active: versionForm.is_active,
+      }),
+    onSuccess: (version) => {
+      setSelectedVersionId(version.id);
+      setVersionForm({ body: "", output_schema: "{\n  \"_radar_export\": true\n}", filename_pattern: "radar_candidate_*.json", changelog: "", is_active: true });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-versions", promptId] });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompts"] });
+    },
+  });
+
+  const prompt = promptQuery.data;
+  const versions = versionsQuery.data || [];
+  const selectedVersion = versions.find((item) => item.id === selectedVersionId) || versions.find((item) => item.is_active) || versions[0];
+
+  useEffect(() => {
+    if (!selectedVersionId && selectedVersion) {
+      setSelectedVersionId(selectedVersion.id);
+    }
+  }, [selectedVersion, selectedVersionId]);
+
+  async function copySelected(includeSchema: boolean) {
+    if (!selectedVersion) {
+      return;
+    }
+    const content = includeSchema
+      ? `${selectedVersion.body}\n\nExpected JSON schema:\n${prettyJson(selectedVersion.output_schema)}`
+      : selectedVersion.body;
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopyStatus(includeSchema ? "Prompt + schema copied." : "Prompt copied.");
+    } catch {
+      setCopyStatus(null);
+      setCopyError("No pude copiar al clipboard. Selecciona el texto del prompt manualmente o enfoca la ventana y reintenta.");
+    }
+  }
+
+  return (
+    <RadarShell title={prompt?.title || "Radar Prompt"} subtitle="Prompt versionado para ejecucion externa: copiar, abrir web, descargar JSON y volver a importar.">
+      {promptQuery.isLoading ? (
+        <SkeletonBlock height={420} />
+      ) : promptQuery.isError || !prompt ? (
+        <StateScreen title="Prompt no encontrado" body={promptQuery.error?.message || "No pude cargar este prompt."} tone="bad" />
+      ) : (
+        <div className="dashboard-grid">
+          <Section title="Prompt metadata" eyebrow={prompt.key} stagger={0}>
+            <article className="list-card">
+              <div className="row spread"><h4>{prompt.title}</h4><span className="meta-pill">{prompt.prompt_type}</span></div>
+              <p>{prompt.description || "Sin descripcion."}</p>
+              <KeyValueList
+                items={[
+                  { label: "latest_version", value: prompt.latest_version ? `v${prompt.latest_version}` : "—" },
+                  { label: "updated_at", value: formatDateTime(prompt.updated_at) },
+                  { label: "suggested_filename", value: selectedVersion?.filename_pattern || "radar_*.json" },
+                ]}
+              />
+            </article>
+            <div className="radar-flow-steps">
+              <span>1. Copy Prompt</span>
+              <span>2. Open ChatGPT Web</span>
+              <span>3. Download radar_*.json</span>
+              <span>4. Go to Import JSON</span>
+            </div>
+          </Section>
+
+          <Section title="Versions" eyebrow="Copy workflow" stagger={1}>
+            {versionsQuery.isLoading ? (
+              <SkeletonBlock height={220} />
+            ) : versions.length === 0 ? (
+              <StateScreen title="Sin versiones" body="Crea la primera version para poder copiar el prompt." />
+            ) : (
+              <>
+                <select value={selectedVersion?.id || ""} onChange={(event) => setSelectedVersionId(event.target.value)}>
+                  {versions.map((version) => <option key={version.id} value={version.id}>v{version.version}{version.is_active ? " active" : ""}</option>)}
+                </select>
+                {selectedVersion ? (
+                  <article className="list-card">
+                    <pre className="json-block prompt-body-block">{selectedVersion.body}</pre>
+                    <div className="hero-actions">
+                      <button className="primary-button" type="button" onClick={() => copySelected(false)}>Copy Prompt</button>
+                      <button className="secondary-button" type="button" onClick={() => copySelected(true)}>Copy Prompt + JSON Schema</button>
+                      <button className="secondary-button" type="button" onClick={() => window.open("https://chatgpt.com", "_blank")}>Open ChatGPT Web</button>
+                      <button className="secondary-button" type="button" onClick={() => window.open("https://claude.ai", "_blank")}>Open Claude Web</button>
+                      <Link className="secondary-button" to="/radar/import">Go to Import JSON</Link>
+                    </div>
+                    {copyStatus ? <p className="form-success">{copyStatus}</p> : null}
+                    {copyError ? <p className="form-error">{copyError}</p> : null}
+                    <span className="eyebrow">output_schema</span>
+                    <pre className="json-block">{prettyJson(selectedVersion.output_schema)}</pre>
+                  </article>
+                ) : null}
+              </>
+            )}
+          </Section>
+
+          <Section title="New version" eyebrow="No API execution" stagger={2}>
+            <form
+              className="radar-form-grid"
+              onSubmit={(event) => {
+                event.preventDefault();
+                createVersionMutation.mutate();
+              }}
+            >
+              <label className="wide-field">Body<textarea value={versionForm.body} onChange={(event) => setVersionForm((current) => ({ ...current, body: event.target.value }))} required /></label>
+              <label className="wide-field">Output schema<textarea value={versionForm.output_schema} onChange={(event) => setVersionForm((current) => ({ ...current, output_schema: event.target.value }))} /></label>
+              <label>Suggested filename<input value={versionForm.filename_pattern} onChange={(event) => setVersionForm((current) => ({ ...current, filename_pattern: event.target.value }))} /></label>
+              <label>Changelog<input value={versionForm.changelog} onChange={(event) => setVersionForm((current) => ({ ...current, changelog: event.target.value }))} /></label>
+              <label className="checkbox-row"><input type="checkbox" checked={versionForm.is_active} onChange={(event) => setVersionForm((current) => ({ ...current, is_active: event.target.checked }))} /> active</label>
+              <div className="hero-actions wide-field">
+                <button className="primary-button" type="submit" disabled={createVersionMutation.isPending}>{createVersionMutation.isPending ? "Creating..." : "Create version"}</button>
+                {createVersionMutation.error instanceof Error ? <span className="form-error">{createVersionMutation.error.message}</span> : null}
+              </div>
+            </form>
+          </Section>
+        </div>
+      )}
+    </RadarShell>
+  );
+}
+
+function RadarPromptDetailPage() {
+  const { promptId = "" } = useParams();
+  const queryClient = useQueryClient();
+  const [selectedVersionId, setSelectedVersionId] = useState("");
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [renderResult, setRenderResult] = useState<RadarPromptRenderResult | null>(null);
+  const [renderForm, setRenderForm] = useState({ candidate_id: "", target_tool: "chatgpt_web", model_label: "", notes: "" });
+  const [renderVariables, setRenderVariables] = useState<Record<string, string>>({});
+  const [versionForm, setVersionForm] = useState({
+    body: "",
+    output_schema: "{\n  \"meta\": {\n    \"promptRunId\": \"string\"\n  }\n}",
+    variables_schema: "{\n  \"properties\": {}\n}",
+    filename_pattern: "radar_candidate_*.json",
+    changelog: "",
+    system_notes: "",
+    is_active: true,
+  });
+
+  const promptQuery = useQuery({ queryKey: ["radar-prompt", promptId], queryFn: () => getRadarPrompt(promptId), enabled: Boolean(promptId) });
+  const versionsQuery = useQuery({ queryKey: ["radar-prompt-versions", promptId], queryFn: () => getRadarPromptVersions(promptId), enabled: Boolean(promptId) });
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const promptRunsQuery = useQuery({
+    queryKey: ["radar-prompt-runs", promptId],
+    queryFn: () => getRadarPromptRuns({ prompt_id: promptId, limit: "6" }),
+    enabled: Boolean(promptId),
+  });
+
+  const createVersionMutation = useMutation({
+    mutationFn: () =>
+      createRadarPromptVersion(promptId, {
+        body: versionForm.body,
+        output_schema: jsonFromTextarea(versionForm.output_schema),
+        variables_schema: jsonFromTextarea(versionForm.variables_schema),
+        filename_pattern: nullIfBlank(versionForm.filename_pattern),
+        changelog: nullIfBlank(versionForm.changelog),
+        system_notes: nullIfBlank(versionForm.system_notes),
+        is_active: versionForm.is_active,
+      }),
+    onSuccess: (version) => {
+      setSelectedVersionId(version.id);
+      setVersionForm({
+        body: "",
+        output_schema: "{\n  \"meta\": {\n    \"promptRunId\": \"string\"\n  }\n}",
+        variables_schema: "{\n  \"properties\": {}\n}",
+        filename_pattern: "radar_candidate_*.json",
+        changelog: "",
+        system_notes: "",
+        is_active: true,
+      });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-versions", promptId] });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompts"] });
+    },
+  });
+
+  const renderMutation = useMutation({
+    mutationFn: () =>
+      renderRadarPromptVersion(promptId, selectedVersion?.id || selectedVersionId, {
+        candidate_id: nullIfBlank(renderForm.candidate_id),
+        target_tool: renderForm.target_tool as "chatgpt_web" | "claude_web" | "codex" | "other",
+        model_label: nullIfBlank(renderForm.model_label),
+        variables: renderVariables,
+        notes: nullIfBlank(renderForm.notes),
+      }),
+    onSuccess: (result) => {
+      setRenderResult(result);
+      setCopyStatus(null);
+      setCopyError(null);
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs", promptId] });
+    },
+  });
+
+  const markCopiedMutation = useMutation({
+    mutationFn: markRadarPromptRunCopied,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs", promptId] });
+    },
+  });
+
+  const prompt = promptQuery.data;
+  const versions = versionsQuery.data || [];
+  const candidates = candidatesQuery.data || [];
+  const promptRuns = promptRunsQuery.data || [];
+  const selectedVersion = versions.find((item) => item.id === selectedVersionId) || versions.find((item) => item.is_active) || versions[0];
+  const variableNames = radarVariableNames(selectedVersion?.variables_schema);
+
+  useEffect(() => {
+    if (!selectedVersionId && selectedVersion) {
+      setSelectedVersionId(selectedVersion.id);
+    }
+  }, [selectedVersion, selectedVersionId]);
+
+  useEffect(() => {
+    setRenderVariables((current) => {
+      const next: Record<string, string> = {};
+      variableNames.forEach((name) => {
+        next[name] = current[name] || "";
+      });
+      return next;
+    });
+  }, [selectedVersionId, variableNames.join("|")]);
+
+  async function copyRenderedPrompt() {
+    if (!renderResult) {
+      return;
+    }
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(renderResult.rendered_prompt);
+      setCopyStatus("Rendered prompt copied. Prompt run is waiting for import.");
+      markCopiedMutation.mutate(renderResult.prompt_run_id);
+    } catch {
+      setCopyStatus(null);
+      setCopyError("No pude copiar al clipboard. El prompt queda visible para seleccionar manualmente.");
+    }
+  }
+
+  return (
+    <RadarShell title={prompt?.title || "Radar Prompt"} subtitle="Render de prompts versionados para ejecucion externa, sin API ni automatizacion web.">
+      {promptQuery.isLoading ? (
+        <SkeletonBlock height={420} />
+      ) : promptQuery.isError || !prompt ? (
+        <StateScreen title="Prompt no encontrado" body={promptQuery.error?.message || "No pude cargar este prompt."} tone="bad" />
+      ) : (
+        <div className="dashboard-grid">
+          <Section title="Prompt metadata" eyebrow={prompt.key} stagger={0}>
+            <article className="list-card">
+              <div className="row spread"><h4>{prompt.title}</h4><span className="meta-pill">{prompt.prompt_type}</span></div>
+              <p>{prompt.description || "Sin descripcion."}</p>
+              <KeyValueList
+                items={[
+                  { label: "latest_version", value: prompt.latest_version ? `v${prompt.latest_version}` : "—" },
+                  { label: "updated_at", value: formatDateTime(prompt.updated_at) },
+                  { label: "suggested_filename", value: selectedVersion?.filename_pattern || "radar_*.json" },
+                ]}
+              />
+            </article>
+            <div className="radar-flow-steps">
+              <span>1. Render with candidate + variables</span>
+              <span>2. Copy rendered prompt</span>
+              <span>3. Run in ChatGPT Web / Claude Web</span>
+              <span>4. Import JSON with meta.promptRunId</span>
+            </div>
+          </Section>
+
+          <Section title="Run externally" eyebrow="Prompt run" stagger={1}>
+            {versions.length === 0 ? (
+              <StateScreen title="Sin versiones" body="Crea una version antes de renderizar." />
+            ) : (
+              <form
+                className="radar-form-grid"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  renderMutation.mutate();
+                }}
+              >
+                <label>
+                  Version
+                  <select value={selectedVersion?.id || ""} onChange={(event) => setSelectedVersionId(event.target.value)}>
+                    {versions.map((version) => <option key={version.id} value={version.id}>v{version.version}{version.is_active ? " active" : ""}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Candidate
+                  <select value={renderForm.candidate_id} onChange={(event) => setRenderForm((current) => ({ ...current, candidate_id: event.target.value }))}>
+                    <option value="">Sin candidate</option>
+                    {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Target tool
+                  <select value={renderForm.target_tool} onChange={(event) => setRenderForm((current) => ({ ...current, target_tool: event.target.value }))}>
+                    <option value="chatgpt_web">ChatGPT Web</option>
+                    <option value="claude_web">Claude Web</option>
+                    <option value="codex">Codex</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label>Model label<input value={renderForm.model_label} onChange={(event) => setRenderForm((current) => ({ ...current, model_label: event.target.value }))} placeholder="GPT-5.5 Thinking" /></label>
+                {variableNames.map((name) => (
+                  <label key={name}>
+                    variables.{name}
+                    <input value={renderVariables[name] || ""} onChange={(event) => setRenderVariables((current) => ({ ...current, [name]: event.target.value }))} />
+                  </label>
+                ))}
+                <label className="wide-field">Notes<textarea value={renderForm.notes} onChange={(event) => setRenderForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+                <div className="hero-actions wide-field">
+                  <button className="primary-button" type="submit" disabled={renderMutation.isPending || !selectedVersion}>
+                    {renderMutation.isPending ? "Rendering..." : "Render Prompt"}
+                  </button>
+                  {renderMutation.error instanceof Error ? <span className="form-error">{renderMutation.error.message}</span> : null}
+                </div>
+              </form>
+            )}
+            {renderResult ? (
+              <article className="list-card">
+                <KeyValueList
+                  items={[
+                    { label: "prompt_run_id", value: renderResult.prompt_run_id },
+                    { label: "expected_filename", value: renderResult.expected_filename },
+                    { label: "target_tool", value: renderResult.target_tool },
+                  ]}
+                />
+                {renderResult.warnings.length ? renderResult.warnings.map((warning) => <p className="form-error" key={warning}>{warning}</p>) : null}
+                <textarea className="rendered-prompt-preview" readOnly value={renderResult.rendered_prompt} />
+                <div className="hero-actions">
+                  <button className="primary-button" type="button" onClick={copyRenderedPrompt}>Copy Prompt</button>
+                  <button className="secondary-button" type="button" onClick={() => window.open("https://chatgpt.com", "_blank")}>Open ChatGPT Web</button>
+                  <button className="secondary-button" type="button" onClick={() => window.open("https://claude.ai", "_blank")}>Open Claude Web</button>
+                  <Link className="secondary-button" to={`/radar/import?candidate_id=${renderForm.candidate_id}&prompt_run_id=${renderResult.prompt_run_id}`}>Go to Import JSON</Link>
+                </div>
+                {copyStatus ? <p className="form-success">{copyStatus}</p> : null}
+                {copyError ? <p className="form-error">{copyError}</p> : null}
+              </article>
+            ) : null}
+          </Section>
+
+          <Section title="Versions" eyebrow="Template source" stagger={2}>
+            {versionsQuery.isLoading ? (
+              <SkeletonBlock height={220} />
+            ) : versions.length === 0 ? (
+              <StateScreen title="Sin versiones" body="Crea la primera version para poder renderizar." />
+            ) : selectedVersion ? (
+              <article className="list-card">
+                <pre className="json-block prompt-body-block">{selectedVersion.body}</pre>
+                <span className="eyebrow">variables_schema</span>
+                <pre className="json-block">{prettyJson(selectedVersion.variables_schema)}</pre>
+                <span className="eyebrow">output_schema</span>
+                <pre className="json-block">{prettyJson(selectedVersion.output_schema)}</pre>
+              </article>
+            ) : null}
+          </Section>
+
+          <Section title="Recent prompt runs" eyebrow="This prompt" stagger={3}>
+            {promptRunsQuery.isLoading ? (
+              <SkeletonBlock height={200} />
+            ) : promptRuns.length === 0 ? (
+              <StateScreen title="Sin prompt runs" body="Los renders externos van a aparecer aca." />
+            ) : (
+              <div className="stack-list compact">
+                {promptRuns.map((run) => (
+                  <article className="list-card" key={run.id}>
+                    <div className="row spread"><h4>{run.expected_filename || run.id}</h4><StatusChip value={run.status} /></div>
+                    <p>{run.model_label || run.target_tool}</p>
+                    <div className="meta-row"><span>{formatDateTime(run.created_at)}</span><Link to="/radar/prompt-runs">View runs</Link></div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section title="New version" eyebrow="Template + schema" stagger={4}>
+            <form
+              className="radar-form-grid"
+              onSubmit={(event) => {
+                event.preventDefault();
+                createVersionMutation.mutate();
+              }}
+            >
+              <label className="wide-field">Body<textarea value={versionForm.body} onChange={(event) => setVersionForm((current) => ({ ...current, body: event.target.value }))} required placeholder="Use {{candidate.name}} and {{variables.angle}} placeholders." /></label>
+              <label className="wide-field">Variables schema<textarea value={versionForm.variables_schema} onChange={(event) => setVersionForm((current) => ({ ...current, variables_schema: event.target.value }))} /></label>
+              <label className="wide-field">Output schema<textarea value={versionForm.output_schema} onChange={(event) => setVersionForm((current) => ({ ...current, output_schema: event.target.value }))} /></label>
+              <label>Suggested filename<input value={versionForm.filename_pattern} onChange={(event) => setVersionForm((current) => ({ ...current, filename_pattern: event.target.value }))} /></label>
+              <label>Changelog<input value={versionForm.changelog} onChange={(event) => setVersionForm((current) => ({ ...current, changelog: event.target.value }))} /></label>
+              <label className="wide-field">System notes<textarea value={versionForm.system_notes} onChange={(event) => setVersionForm((current) => ({ ...current, system_notes: event.target.value }))} /></label>
+              <label className="checkbox-row"><input type="checkbox" checked={versionForm.is_active} onChange={(event) => setVersionForm((current) => ({ ...current, is_active: event.target.checked }))} /> active</label>
+              <div className="hero-actions wide-field">
+                <button className="primary-button" type="submit" disabled={createVersionMutation.isPending}>{createVersionMutation.isPending ? "Creating..." : "Create version"}</button>
+                {createVersionMutation.error instanceof Error ? <span className="form-error">{createVersionMutation.error.message}</span> : null}
+              </div>
+            </form>
+          </Section>
+        </div>
+      )}
+    </RadarShell>
+  );
+}
+
+function RadarPromptRunsPage() {
+  const queryClient = useQueryClient();
+  const [filters, setFilters] = useState({ candidate_id: "", prompt_id: "", status: "", q: "" });
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const promptsQuery = useQuery({ queryKey: ["radar-prompts"], queryFn: getRadarPrompts });
+  const runsQuery = useQuery({
+    queryKey: ["radar-prompt-runs", filters.candidate_id, filters.prompt_id, filters.status],
+    queryFn: () => getRadarPromptRuns({ candidate_id: filters.candidate_id, prompt_id: filters.prompt_id, status: filters.status, limit: "50" }),
+  });
+  const cancelMutation = useMutation({
+    mutationFn: cancelRadarPromptRun,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs"] }),
+  });
+
+  const candidates = candidatesQuery.data || [];
+  const prompts = promptsQuery.data || [];
+  const promptById = new Map(prompts.map((prompt) => [prompt.id, prompt]));
+  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const q = filters.q.trim().toLowerCase();
+  const runs = (runsQuery.data || []).filter((run) => {
+    const prompt = promptById.get(run.prompt_id);
+    const candidate = run.candidate_id ? candidateById.get(run.candidate_id) : null;
+    const haystack = [run.id, run.expected_filename, run.model_label, run.target_tool, run.status, prompt?.title, candidate?.name].filter(Boolean).join(" ").toLowerCase();
+    return !q || haystack.includes(q);
+  });
+  const selectedRun = runs.find((run) => run.id === selectedRunId) || runs[0] || null;
+
+  async function copyRunAgain(run: RadarPromptRun) {
+    try {
+      await navigator.clipboard.writeText(run.rendered_prompt);
+    } catch {
+      // The rendered prompt remains visible as a selectable fallback.
+    }
+  }
+
+  return (
+    <RadarShell title="Radar Prompt Runs" subtitle="Ejecuciones externas/manuales de prompts, sin API ni browser automation.">
+      <div className="detail-layout">
+        <Section title="Prompt runs" eyebrow="Filters" stagger={0} aside={<span className="meta-pill">{runs.length}</span>}>
+          <div className="filters">
+            <input placeholder="Search runs..." value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} />
+            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+              <option value="">Any status</option>
+              <option value="created">created</option>
+              <option value="waiting_import">waiting_import</option>
+              <option value="applied">applied</option>
+              <option value="cancelled">cancelled</option>
+              <option value="failed">failed</option>
+            </select>
+            <select value={filters.prompt_id} onChange={(event) => setFilters((current) => ({ ...current, prompt_id: event.target.value }))}>
+              <option value="">Any prompt</option>
+              {prompts.map((prompt) => <option key={prompt.id} value={prompt.id}>{prompt.title}</option>)}
+            </select>
+            <select value={filters.candidate_id} onChange={(event) => setFilters((current) => ({ ...current, candidate_id: event.target.value }))}>
+              <option value="">Any candidate</option>
+              {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+            </select>
+          </div>
+          {runsQuery.isLoading ? (
+            <SkeletonBlock height={360} />
+          ) : runs.length === 0 ? (
+            <StateScreen title="Sin prompt runs" body="Renderiza un prompt desde Prompt Detail para crear el primer run externo." />
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Prompt</th><th>Candidate</th><th>Tool</th><th>Status</th><th>Expected filename</th><th>Created</th><th>Apply log</th></tr></thead>
+                <tbody>
+                  {runs.map((run) => (
+                    <tr key={run.id} onClick={() => setSelectedRunId(run.id)}>
+                      <td>{promptById.get(run.prompt_id)?.title || run.prompt_id}</td>
+                      <td>{run.candidate_id ? candidateById.get(run.candidate_id)?.name || run.candidate_id : "—"}</td>
+                      <td>{run.model_label || run.target_tool}</td>
+                      <td><StatusChip value={run.status} /></td>
+                      <td>{run.expected_filename || "—"}</td>
+                      <td>{formatDateTime(run.created_at)}</td>
+                      <td>{run.apply_log_id ? <Link to="/radar/apply-logs">linked</Link> : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Run detail" eyebrow="Rendered prompt" stagger={1}>
+          {selectedRun ? (
+            <article className="list-card">
+              <div className="row spread"><h4>{selectedRun.expected_filename || selectedRun.id}</h4><StatusChip value={selectedRun.status} /></div>
+              <KeyValueList
+                items={[
+                  { label: "prompt_run_id", value: selectedRun.id },
+                  { label: "prompt", value: promptById.get(selectedRun.prompt_id)?.title || selectedRun.prompt_id },
+                  { label: "candidate", value: selectedRun.candidate_id ? candidateById.get(selectedRun.candidate_id)?.name || selectedRun.candidate_id : "—" },
+                  { label: "tool", value: selectedRun.model_label || selectedRun.target_tool },
+                  { label: "apply_log", value: selectedRun.apply_log_id || "—" },
+                ]}
+              />
+              <textarea className="rendered-prompt-preview" readOnly value={selectedRun.rendered_prompt} />
+              <div className="hero-actions">
+                <button className="secondary-button" type="button" onClick={() => copyRunAgain(selectedRun)}>Copy again</button>
+                <Link className="secondary-button" to={`/radar/import?candidate_id=${selectedRun.candidate_id || ""}&prompt_run_id=${selectedRun.id}`}>Go to Import JSON</Link>
+                {selectedRun.status !== "applied" && selectedRun.status !== "cancelled" ? (
+                  <button className="danger-button" type="button" onClick={() => cancelMutation.mutate(selectedRun.id)}>Cancel</button>
+                ) : null}
+              </div>
+            </article>
+          ) : (
+            <StateScreen title="Selecciona un prompt run" body="Elegi una fila para ver y copiar el prompt renderizado." />
+          )}
+        </Section>
+      </div>
+    </RadarShell>
+  );
+}
+
+function RadarApplyLogsPage() {
+  const [filters, setFilters] = useState({ status: "", candidate_id: "", model_used: "" });
+  const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const logsQuery = useQuery({
+    queryKey: ["radar-apply-logs", filters.status, filters.candidate_id],
+    queryFn: () => getRadarApplyLogs({ status: filters.status, candidate_id: filters.candidate_id, limit: "50" }),
+  });
+
+  const candidates = candidatesQuery.data || [];
+  const logs = (logsQuery.data || []).filter((item) => !filters.model_used || (item.model_used || "").toLowerCase().includes(filters.model_used.toLowerCase()));
+  const candidateById = new Map(candidates.map((item) => [item.id, item]));
+  const selectedLog = logs.find((item) => item.id === selectedLogId) || logs[0] || null;
+
+  return (
+    <RadarShell title="Radar Apply Logs" subtitle="Historial read-only de dry-runs y applies manuales para auditar imports JSON.">
+      <div className="detail-layout">
+        <Section title="Logs" eyebrow="Filters" stagger={0} aside={<span className="meta-pill">{logs.length}</span>}>
+          <div className="filters">
+            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+              <option value="">Any status</option>
+              <option value="applied">applied</option>
+              <option value="dry_run">dry_run</option>
+              <option value="failed">failed</option>
+            </select>
+            <select value={filters.candidate_id} onChange={(event) => setFilters((current) => ({ ...current, candidate_id: event.target.value }))}>
+              <option value="">Any candidate</option>
+              {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+            </select>
+            <input placeholder="model_used" value={filters.model_used} onChange={(event) => setFilters((current) => ({ ...current, model_used: event.target.value }))} />
+          </div>
+          {logsQuery.isLoading ? (
+            <SkeletonBlock height={360} />
+          ) : logs.length === 0 ? (
+            <StateScreen title="Sin logs" body="No hay apply logs para estos filtros." />
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Status</th><th>Candidate</th><th>Model</th><th>Source</th><th>Created</th><th>Error</th></tr></thead>
+                <tbody>
+                  {logs.map((item) => (
+                    <tr key={item.id} onClick={() => setSelectedLogId(item.id)}>
+                      <td><StatusChip value={item.status} /></td>
+                      <td>{item.candidate_id ? candidateById.get(item.candidate_id)?.name || item.candidate_id : "—"}</td>
+                      <td>{item.model_used || "—"}</td>
+                      <td>{item.source_type}</td>
+                      <td>{formatDateTime(item.created_at)}</td>
+                      <td>{item.error_message || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Log detail" eyebrow="JSON payload" stagger={1}>
+          {selectedLog ? (
+            <article className="list-card">
+              <div className="row spread"><h4>{selectedLog.id}</h4><StatusChip value={selectedLog.status} /></div>
+              <KeyValueList
+                items={[
+                  { label: "candidate", value: selectedLog.candidate_id || "—" },
+                  { label: "prompt", value: selectedLog.prompt_id || "—" },
+                  { label: "prompt_version", value: selectedLog.prompt_version_id || "—" },
+                  { label: "model", value: selectedLog.model_used || "—" },
+                  { label: "source", value: selectedLog.source_type },
+                  { label: "created_at", value: formatDateTime(selectedLog.created_at) },
+                ]}
+              />
+              {selectedLog.error_message ? <p className="form-error">{selectedLog.error_message}</p> : null}
+              <span className="eyebrow">json_payload</span>
+              <pre className="json-block">{prettyJson(selectedLog.json_payload)}</pre>
+              <span className="eyebrow">applied_changes</span>
+              <pre className="json-block">{prettyJson(selectedLog.applied_changes)}</pre>
+            </article>
+          ) : (
+            <StateScreen title="Selecciona un log" body="Elegi una fila para ver el JSON aplicado o fallido." />
+          )}
+        </Section>
+      </div>
+    </RadarShell>
+  );
+}
+
+function RadarSettingsPage() {
+  const configQuery = useQuery({ queryKey: ["radar-config"], queryFn: getRadarConfig });
+  const config = configQuery.data || [];
+
+  return (
+    <RadarShell title="Radar Settings" subtitle="Taxonomias actuales de Radar. En Fase 3 quedan read-only para evitar reglas prematuras.">
+      <Section title="Taxonomies" eyebrow="Read-only config" stagger={0}>
+        {configQuery.isLoading ? (
+          <SkeletonBlock height={420} />
+        ) : config.length === 0 ? (
+          <StateScreen title="Sin config" body="No encontre valores en radar_config." tone="bad" />
+        ) : (
+          <div className="settings-grid">
+            {radarTaxonomyKeys.map((key, index) => {
+              const item = config.find((entry) => entry.key === key);
+              return (
+                <article className="list-card reveal" key={key} style={{ "--stagger": index } as React.CSSProperties}>
+                  <div className="row spread"><h4>{radarCandidateFieldLabels[key]}</h4><span className="meta-pill">{radarConfigValues(config, key).length}</span></div>
+                  <p>{item?.description || `Radar taxonomy for ${key}`}</p>
+                  <div className="tag-list">
+                    {radarConfigValues(config, key).map((value) => <span className="meta-pill" key={value}>{value}</span>)}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </Section>
+    </RadarShell>
+  );
+}
+
+function RadarImportPage() {
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedCandidateId = searchParams.get("candidate_id") ?? "";
+  const selectedPromptRunId = searchParams.get("prompt_run_id") ?? "";
+  const [jsonInput, setJsonInput] = useState("");
+  const [inputError, setInputError] = useState<string | null>(null);
+  const [lastSourceType, setLastSourceType] = useState<"manual_paste" | "drag_drop">("manual_paste");
+  const [lastResult, setLastResult] = useState<RadarApplyResult | null>(null);
+  const [lastPreview, setLastPreview] = useState<RadarApplyResult | null>(null);
+
+  const candidatesQuery = useQuery({
+    queryKey: ["radar-candidates"],
+    queryFn: getRadarCandidates,
+  });
+  const recentLogsQuery = useQuery({
+    queryKey: ["radar-apply-logs", "recent"],
+    queryFn: () => getRadarApplyLogs({ limit: "12" }),
+  });
+  const waitingPromptRunsQuery = useQuery({
+    queryKey: ["radar-prompt-runs", "waiting-import"],
+    queryFn: () => getRadarPromptRuns({ status: "waiting_import", limit: "8" }),
+  });
+  const selectedCandidateQuery = useQuery({
+    queryKey: ["radar-candidate", selectedCandidateId],
+    queryFn: () => getRadarCandidate(selectedCandidateId),
+    enabled: Boolean(selectedCandidateId),
+  });
+  const selectedEvidenceQuery = useQuery({
+    queryKey: ["radar-evidence", selectedCandidateId],
+    queryFn: () => getRadarCandidateEvidence(selectedCandidateId),
+    enabled: Boolean(selectedCandidateId),
+  });
+  const selectedLogsQuery = useQuery({
+    queryKey: ["radar-apply-logs", selectedCandidateId],
+    queryFn: () => getRadarApplyLogs({ candidate_id: selectedCandidateId, limit: "8" }),
+    enabled: Boolean(selectedCandidateId),
+  });
+
+  const previewMutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => applyRadarJson(payload, { dryRun: true }),
+    onSuccess: (result) => {
+      setLastPreview(result);
+      setLastResult(null);
+      const candidateId = result.candidate_id;
+      if (candidateId) {
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current);
+          next.set("candidate_id", candidateId);
+          return next;
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["radar-apply-logs"] });
+    },
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => applyRadarJson(payload),
+    onSuccess: (result) => {
+      setLastResult(result);
+      setLastPreview(null);
+      const candidateId = result.candidate_id;
+      if (candidateId) {
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current);
+          next.set("candidate_id", candidateId);
+          return next;
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["radar-candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-candidate"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-evidence"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-apply-logs"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs"] });
+    },
+  });
+
+  const candidates = (candidatesQuery.data as RadarCandidate[] | undefined) || [];
+  const selectedCandidate = selectedCandidateQuery.data as RadarCandidate | undefined;
+  const evidence = (selectedEvidenceQuery.data as RadarEvidence[] | undefined) || [];
+  const candidateLogs = (selectedLogsQuery.data as RadarApplyLog[] | undefined) || [];
+  const recentLogs = (recentLogsQuery.data as RadarApplyLog[] | undefined) || [];
+  const waitingPromptRuns = (waitingPromptRunsQuery.data as RadarPromptRun[] | undefined) || [];
+
+  function injectSourceType(payload: Record<string, unknown>) {
+    const cloned = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+    if (cloned._radar_export === true && cloned.data && typeof cloned.data === "object" && !Array.isArray(cloned.data)) {
+      const wrapperData = cloned.data as Record<string, unknown>;
+      const meta =
+        wrapperData.meta && typeof wrapperData.meta === "object" && !Array.isArray(wrapperData.meta)
+          ? { ...(wrapperData.meta as Record<string, unknown>) }
+          : {};
+      meta.sourceType = lastSourceType;
+      wrapperData.meta = meta;
+      cloned.data = wrapperData;
+      return cloned;
+    }
+
+    const meta =
+      cloned.meta && typeof cloned.meta === "object" && !Array.isArray(cloned.meta)
+        ? { ...(cloned.meta as Record<string, unknown>) }
+        : {};
+    meta.sourceType = lastSourceType;
+    cloned.meta = meta;
+    return cloned;
+  }
+
+  function parseCurrentInput() {
+    if (!jsonInput.trim()) {
+      throw new Error("Pegá o arrastrá un JSON antes de validar.");
+    }
+    try {
+      const parsed = JSON.parse(jsonInput) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Radar import espera un JSON object en el nivel raíz.");
+      }
+      return injectSourceType(parsed);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error("No pude parsear el JSON.");
+    }
+  }
+
+  function runPreview() {
+    setInputError(null);
+    try {
+      previewMutation.mutate(parseCurrentInput());
+    } catch (error) {
+      setLastPreview(null);
+      setLastResult(null);
+      setInputError(error instanceof Error ? error.message : "No pude validar el JSON.");
+    }
+  }
+
+  function runApply() {
+    setInputError(null);
+    try {
+      applyMutation.mutate(parseCurrentInput());
+    } catch (error) {
+      setLastResult(null);
+      setInputError(error instanceof Error ? error.message : "No pude aplicar el JSON.");
+    }
+  }
+
+  function handleFileDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const file = event.dataTransfer.files?.[0];
+    if (!file) {
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setInputError("Solo se aceptan archivos .json en esta fase.");
+      return;
+    }
+    file
+      .text()
+      .then((content) => {
+        setJsonInput(content);
+        setLastSourceType("drag_drop");
+        setInputError(null);
+      })
+      .catch(() => {
+        setInputError("No pude leer el archivo arrastrado.");
+      });
+  }
+
+  const activeResult = lastResult || lastPreview;
+  const mutationError =
+    (applyMutation.error instanceof Error ? applyMutation.error.message : null) ||
+    (previewMutation.error instanceof Error ? previewMutation.error.message : null);
+
+  return (
+    <RadarShell
+      title="Radar Import"
+      subtitle="Loop manual mínimo para pegar o arrastrar JSON Radar, validar en dry-run y aplicar sobre un candidate existente."
+    >
+      <div className="dashboard-grid">
+        <Section title="Apply JSON" eyebrow="Manual import" stagger={0}>
+          {inputError ? <p className="form-error">{inputError}</p> : null}
+          {mutationError ? <p className="form-error">{mutationError}</p> : null}
+          {selectedPromptRunId ? <p className="panel-note">Prompt run seleccionado: {selectedPromptRunId}</p> : null}
+          {lastResult?.ok ? <p className="form-success">Apply real persistido correctamente.</p> : null}
+          {lastPreview?.ok ? <p className="form-success">Dry-run válido. Ya tenés preview de lo que se aplicaría.</p> : null}
+
+          <div
+            className="radar-dropzone"
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onDrop={handleFileDrop}
+          >
+            <strong>Drag & drop .json</strong>
+            <p>O pegá el JSON manualmente. Esta fase no observa carpetas ni Downloads todavía.</p>
+          </div>
+
+          <div className="filters">
+            <textarea
+              className="radar-json-input"
+              value={jsonInput}
+              onChange={(event) => {
+                setJsonInput(event.target.value);
+                setLastSourceType("manual_paste");
+              }}
+              placeholder='Pegá acá un JSON Radar con wrapper `_radar_export` o payload `meta` + `updates`.'
+            />
+          </div>
+
+          <div className="hero-actions">
+            <button className="secondary-button" onClick={runPreview} disabled={previewMutation.isPending || applyMutation.isPending}>
+              {previewMutation.isPending ? "Validando..." : "Validar / Preview"}
+            </button>
+            <button className="primary-button" onClick={runApply} disabled={applyMutation.isPending || previewMutation.isPending}>
+              {applyMutation.isPending ? "Aplicando..." : "Aplicar"}
+            </button>
+            <span className="meta-pill">source_type: {lastSourceType}</span>
+          </div>
+
+          <div className="detail-layout">
+            <Section title="Resultado" eyebrow="Preview / apply" stagger={1}>
+              {activeResult ? (
+                <div className="stack-list compact">
+                  <article className="list-card">
+                    <div className="row spread">
+                      <h4>{activeResult.dry_run ? "Dry-run" : "Apply real"}</h4>
+                      <StatusChip value={activeResult.dry_run ? "ready" : "done"} />
+                    </div>
+                    <KeyValueList
+                      items={[
+                        { label: "mode", value: activeResult.mode },
+                        { label: "candidate_id", value: activeResult.candidate_id || "—" },
+                        { label: "updates", value: activeResult.updates_applied.join(", ") || "—" },
+                        { label: "evidence", value: String(activeResult.evidence_created) },
+                        { label: "apply_log", value: activeResult.apply_log_id },
+                        { label: "prompt_run", value: activeResult.prompt_run_id || "—" },
+                      ]}
+                    />
+                    {activeResult.warnings.length ? (
+                      <div className="stack-list compact">
+                        {activeResult.warnings.map((warning) => (
+                          <p className="form-error" key={warning}>
+                            {warning}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="panel-note">Sin warnings para este import.</p>
+                    )}
+                  </article>
+                </div>
+              ) : (
+                <StateScreen title="Sin preview todavía" body="Validá o aplicá un JSON para ver el resultado resumido en esta misma pantalla." />
+              )}
+            </Section>
+
+            <Section title="Recent apply logs" eyebrow="Radar history" stagger={2} aside={<span className="meta-pill">{recentLogs.length} logs</span>}>
+              {recentLogsQuery.isLoading ? (
+                <SkeletonBlock height={220} />
+              ) : recentLogs.length === 0 ? (
+                <StateScreen title="Sin apply logs" body="Todavía no hay imports manuales registrados para Radar." />
+              ) : (
+                <div className="stack-list compact">
+                  {recentLogs.map((item) => (
+                    <article
+                      className="list-card clickable-card"
+                      key={item.id}
+                      onClick={() => {
+                        if (!item.candidate_id) {
+                          return;
+                        }
+                        setSearchParams((current) => {
+                          const next = new URLSearchParams(current);
+                          next.set("candidate_id", item.candidate_id as string);
+                          return next;
+                        });
+                      }}
+                    >
+                      <div className="row spread">
+                        <h4>{item.candidate_id || "Sin candidate"}</h4>
+                        <StatusChip value={item.status} />
+                      </div>
+                      <p>{item.error_message || item.notes || item.recognized_format || "Import log sin detalle extra."}</p>
+                      <div className="meta-row">
+                        <span>{item.source_type}</span>
+                        <span>{formatDateTime(item.created_at)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </Section>
+          </div>
+        </Section>
+
+        <Section title="Waiting prompt runs" eyebrow="External runs" stagger={3} aside={<span className="meta-pill">{waitingPromptRuns.length}</span>}>
+          {waitingPromptRunsQuery.isLoading ? (
+            <SkeletonBlock height={180} />
+          ) : waitingPromptRuns.length === 0 ? (
+            <StateScreen title="Sin prompt runs esperando import" body="Cuando copies un prompt renderizado, queda marcado como waiting_import." />
+          ) : (
+            <div className="stack-list compact">
+              {waitingPromptRuns.map((run) => (
+                <article className="list-card" key={run.id}>
+                  <div className="row spread">
+                    <h4>{run.expected_filename || run.id}</h4>
+                    <StatusChip value={run.status} />
+                  </div>
+                  <p>{run.model_label || run.target_tool}</p>
+                  <div className="hero-actions">
+                    <Link className="secondary-button" to={`/radar/import?candidate_id=${run.candidate_id || ""}&prompt_run_id=${run.id}`}>
+                      Import JSON for this run
+                    </Link>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title="Candidate detail"
+          eyebrow="Minimal read-only"
+          stagger={3}
+          aside={
+            <select
+              value={selectedCandidateId}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setSearchParams((current) => {
+                  const next = new URLSearchParams(current);
+                  if (nextValue) {
+                    next.set("candidate_id", nextValue);
+                  } else {
+                    next.delete("candidate_id");
+                  }
+                  return next;
+                });
+              }}
+            >
+              <option value="">Elegí una candidate</option>
+              {candidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.name}
+                </option>
+              ))}
+            </select>
+          }
+        >
+          {candidatesQuery.isLoading ? (
+            <SkeletonBlock height={180} />
+          ) : !selectedCandidateId ? (
+            <StateScreen title="Seleccioná una candidate" body="Podés elegir una candidate desde el dropdown o dejar que el import seleccione automáticamente la afectada." />
+          ) : selectedCandidateQuery.isLoading ? (
+            <SkeletonBlock height={420} />
+          ) : selectedCandidateQuery.isError ? (
+            <StateScreen title="No pude cargar la candidate" body={selectedCandidateQuery.error.message} tone="bad" />
+          ) : selectedCandidate ? (
+            <div className="detail-layout">
+              <div className="stack-list">
+                <article className="list-card">
+                  <div className="row spread">
+                    <h4>{selectedCandidate.name}</h4>
+                    {selectedCandidate.verdict ? <StatusChip value={selectedCandidate.verdict} /> : <span className="meta-pill">sin verdict</span>}
+                  </div>
+                  <p>{selectedCandidate.summary || selectedCandidate.hypothesis || "Sin summary ni hypothesis persistidos."}</p>
+                  <KeyValueList
+                    items={[
+                      { label: "slug", value: selectedCandidate.slug },
+                      { label: "focus", value: selectedCandidate.focus || "—" },
+                      { label: "scope", value: selectedCandidate.scope || "—" },
+                      { label: "maturity", value: selectedCandidate.maturity || "—" },
+                      { label: "priority", value: selectedCandidate.priority ?? "—" },
+                      { label: "updated_at", value: formatDateTime(selectedCandidate.updated_at) },
+                    ]}
+                  />
+                  <div className="json-block-group">
+                    <div>
+                      <span className="eyebrow">scorecard</span>
+                      <pre className="json-block">{prettyJson(selectedCandidate.scorecard)}</pre>
+                    </div>
+                    <div>
+                      <span className="eyebrow">gates</span>
+                      <pre className="json-block">{prettyJson(selectedCandidate.gates)}</pre>
+                    </div>
+                    <div>
+                      <span className="eyebrow">next_research</span>
+                      <pre className="json-block">{prettyJson(selectedCandidate.next_research)}</pre>
+                    </div>
+                    <div>
+                      <span className="eyebrow">kill_criteria</span>
+                      <pre className="json-block">{prettyJson(selectedCandidate.kill_criteria)}</pre>
+                    </div>
+                  </div>
+                  <div className="stack-list compact">
+                    <div>
+                      <span className="eyebrow">Decision memo</span>
+                      <p>{selectedCandidate.decision_memo || "—"}</p>
+                    </div>
+                  </div>
+                </article>
+              </div>
+
+              <div className="stack-list">
+                <Section title="Evidence" eyebrow="Linked rows" stagger={4} aside={<span className="meta-pill">{evidence.length}</span>}>
+                  {selectedEvidenceQuery.isLoading ? (
+                    <SkeletonBlock height={180} />
+                  ) : evidence.length === 0 ? (
+                    <StateScreen title="Sin evidence" body="Todavía no hay evidence persistida para esta candidate." />
+                  ) : (
+                    <div className="stack-list compact">
+                      {evidence.map((item) => (
+                        <article className="list-card" key={item.id}>
+                          <div className="row spread">
+                            <h4>{item.title || item.kind}</h4>
+                            <span className="meta-pill">{item.kind}</span>
+                          </div>
+                          <p>{item.claim || item.notes || "Sin claim persistido."}</p>
+                          <div className="meta-row">
+                            <span>{item.source_name || "source n/a"}</span>
+                            <span>{item.confidence !== null ? `confidence ${item.confidence}` : "sin confidence"}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </Section>
+
+                <Section title="Apply logs" eyebrow="Candidate scoped" stagger={5} aside={<span className="meta-pill">{candidateLogs.length}</span>}>
+                  {selectedLogsQuery.isLoading ? (
+                    <SkeletonBlock height={180} />
+                  ) : candidateLogs.length === 0 ? (
+                    <StateScreen title="Sin logs de apply" body="Todavía no hay imports manuales asociados a esta candidate." />
+                  ) : (
+                    <div className="stack-list compact">
+                      {candidateLogs.map((item) => (
+                        <article className="list-card" key={item.id}>
+                          <div className="row spread">
+                            <h4>{item.id}</h4>
+                            <StatusChip value={item.status} />
+                          </div>
+                          <p>{item.error_message || item.notes || item.recognized_format || "Sin detalle adicional."}</p>
+                          <div className="meta-row">
+                            <span>{item.source_type}</span>
+                            <span>{formatDateTime(item.created_at)}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </Section>
+              </div>
+            </div>
+          ) : (
+            <StateScreen title="Candidate no encontrada" body="La candidate seleccionada ya no existe o no pudo cargarse." tone="bad" />
+          )}
+        </Section>
+      </div>
+    </RadarShell>
   );
 }
 
@@ -5132,6 +7145,15 @@ export function App() {
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<OverviewPage />} />
       <Route path="/dashboard/activity" element={<ActivityFeedPage />} />
+      <Route path="/radar" element={<RadarOverviewPage />} />
+      <Route path="/radar/candidates" element={<RadarCandidatesPage />} />
+      <Route path="/radar/candidates/:candidateId" element={<RadarCandidateDetailPage />} />
+      <Route path="/radar/prompts" element={<RadarPromptsPage />} />
+      <Route path="/radar/prompts/:promptId" element={<RadarPromptDetailPage />} />
+      <Route path="/radar/prompt-runs" element={<RadarPromptRunsPage />} />
+      <Route path="/radar/import" element={<RadarImportPage />} />
+      <Route path="/radar/apply-logs" element={<RadarApplyLogsPage />} />
+      <Route path="/radar/settings" element={<RadarSettingsPage />} />
       <Route path="/dashboard/projects" element={<ProjectsPage />} />
       <Route path="/dashboard/projects/:projectId" element={<ProjectDetailPage />} />
       <Route path="/dashboard/runs" element={<RunsPage />} />
@@ -5144,7 +7166,7 @@ export function App() {
       <Route
         path="*"
         element={
-          <AppShell title="Not found" subtitle="La ruta no existe dentro del dashboard F7A.">
+          <AppShell title="Not found" subtitle="La ruta no existe dentro del dashboard F7B.">
             <StateScreen title="Ruta no encontrada" body="Volvé a Overview, Activity, Projects, Runs, Handoffs, Ideas, Research, Prompts & Traces, Notifications o System." tone="bad" />
           </AppShell>
         }

@@ -35,6 +35,21 @@ import type {
   TasksBoardResponse,
   RunDetail,
   RunSummary,
+  RadarApplyLog,
+  RadarApplyResult,
+  RadarCandidate,
+  RadarCandidateInput,
+  RadarConfigItem,
+  RadarEvidence,
+  RadarEvidenceInput,
+  RadarPrompt,
+  RadarPromptInput,
+  RadarPromptRenderInput,
+  RadarPromptRenderResult,
+  RadarPromptRun,
+  RadarPromptRunPatchInput,
+  RadarPromptVersion,
+  RadarPromptVersionInput,
   SystemHealthResponse,
   SystemIntegrationsResponse,
   SystemJobsResponse,
@@ -111,6 +126,158 @@ async function dashboardWrite<T>(path: string, init: RequestInit): Promise<T> {
 
 export function getOverview() {
   return dashboardFetch<OverviewResponse>("/dashboard/overview");
+}
+
+export function getRadarCandidates() {
+  return dashboardFetch<RadarCandidate[]>("/radar/candidates");
+}
+
+export function getRadarCandidate(candidateId: string) {
+  return dashboardFetch<RadarCandidate>(`/radar/candidates/${candidateId}`);
+}
+
+export function createRadarCandidate(payload: RadarCandidateInput & { slug: string; name: string }) {
+  return dashboardWrite<RadarCandidate>("/radar/candidates", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRadarCandidate(candidateId: string, payload: RadarCandidateInput) {
+  return dashboardWrite<RadarCandidate>(`/radar/candidates/${candidateId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRadarCandidate(candidateId: string) {
+  return dashboardWrite<void>(`/radar/candidates/${candidateId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getRadarCandidateEvidence(candidateId: string) {
+  return dashboardFetch<RadarEvidence[]>(`/radar/candidates/${candidateId}/evidence`);
+}
+
+export function createRadarCandidateEvidence(candidateId: string, payload: RadarEvidenceInput) {
+  return dashboardWrite<RadarEvidence>(`/radar/candidates/${candidateId}/evidence`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRadarEvidence(evidenceId: string) {
+  return dashboardWrite<void>(`/radar/evidence/${evidenceId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getRadarPrompts() {
+  return dashboardFetch<RadarPrompt[]>("/radar/prompts");
+}
+
+export function getRadarPrompt(promptId: string) {
+  return dashboardFetch<RadarPrompt>(`/radar/prompts/${promptId}`);
+}
+
+export function createRadarPrompt(payload: RadarPromptInput & { key: string; title: string; prompt_type: string }) {
+  return dashboardWrite<RadarPrompt>("/radar/prompts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRadarPrompt(promptId: string, payload: RadarPromptInput) {
+  return dashboardWrite<RadarPrompt>(`/radar/prompts/${promptId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRadarPrompt(promptId: string) {
+  return dashboardWrite<void>(`/radar/prompts/${promptId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getRadarPromptVersions(promptId: string) {
+  return dashboardFetch<RadarPromptVersion[]>(`/radar/prompts/${promptId}/versions`);
+}
+
+export function createRadarPromptVersion(promptId: string, payload: RadarPromptVersionInput) {
+  return dashboardWrite<RadarPromptVersion>(`/radar/prompts/${promptId}/versions`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function renderRadarPromptVersion(promptId: string, versionId: string, payload: RadarPromptRenderInput) {
+  return dashboardWrite<RadarPromptRenderResult>(`/radar/prompts/${promptId}/versions/${versionId}/render`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getRadarPromptRuns(filters: {
+  candidate_id?: string;
+  prompt_id?: string;
+  status?: string;
+  limit?: string;
+}) {
+  return dashboardFetch<RadarPromptRun[]>("/radar/prompt-runs", filters);
+}
+
+export function getRadarPromptRun(promptRunId: string) {
+  return dashboardFetch<RadarPromptRun>(`/radar/prompt-runs/${promptRunId}`);
+}
+
+export function updateRadarPromptRun(promptRunId: string, payload: RadarPromptRunPatchInput) {
+  return dashboardWrite<RadarPromptRun>(`/radar/prompt-runs/${promptRunId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function markRadarPromptRunCopied(promptRunId: string) {
+  return dashboardWrite<RadarPromptRun>(`/radar/prompt-runs/${promptRunId}/mark-copied`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function cancelRadarPromptRun(promptRunId: string) {
+  return dashboardWrite<RadarPromptRun>(`/radar/prompt-runs/${promptRunId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function getRadarConfig() {
+  return dashboardFetch<RadarConfigItem[]>("/radar/config");
+}
+
+export function getRadarApplyLogs(filters: {
+  candidate_id?: string;
+  status?: string;
+  limit?: string;
+}) {
+  return dashboardFetch<RadarApplyLog[]>("/radar/apply-logs", filters);
+}
+
+export function getRadarApplyLog(applyLogId: string) {
+  return dashboardFetch<RadarApplyLog>(`/radar/apply-logs/${applyLogId}`);
+}
+
+export function applyRadarJson(
+  payload: Record<string, unknown>,
+  options?: { dryRun?: boolean },
+) {
+  const path = options?.dryRun ? "/radar/apply-json?dry_run=true" : "/radar/apply-json";
+  return dashboardWrite<RadarApplyResult>(path, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getActivityFeed(filters: ActivityFeedFilters) {

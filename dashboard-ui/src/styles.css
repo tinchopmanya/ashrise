@@ -337,6 +337,67 @@ pre {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.saved-views-shell,
+.saved-view-card {
+  border: 1px solid rgba(30, 45, 71, 0.84);
+  background: rgba(9, 16, 28, 0.72);
+}
+
+.saved-views-shell {
+  margin-bottom: 16px;
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.saved-views-actions,
+.saved-view-form,
+.saved-view-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.saved-view-form {
+  margin: 14px 0;
+}
+
+.saved-view-form input {
+  min-width: 260px;
+  flex: 1 1 320px;
+}
+
+.saved-views-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.saved-view-card {
+  padding: 14px;
+  border-radius: 16px;
+}
+
+.saved-view-card.active {
+  border-color: rgba(79, 209, 255, 0.58);
+  box-shadow: 0 0 0 1px rgba(79, 209, 255, 0.12), var(--shadow);
+}
+
+.saved-view-card h4 {
+  margin: 0 0 6px;
+}
+
+.saved-view-card p {
+  margin: 0;
+  color: var(--ink-3);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.saved-view-actions {
+  margin-top: 14px;
+}
+
 .group-stack,
 .group-block {
   display: flex;
@@ -940,6 +1001,193 @@ pre {
 .task-form select:focus {
   border-color: rgba(79, 209, 255, 0.48);
   box-shadow: 0 0 0 1px rgba(79, 209, 255, 0.12);
+}
+
+.radar-dropzone {
+  border: 1px dashed rgba(79, 209, 255, 0.34);
+  border-radius: 18px;
+  background: rgba(12, 23, 38, 0.78);
+  padding: 18px 20px;
+  margin: 0 0 18px;
+}
+
+.radar-dropzone strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.radar-dropzone p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.radar-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 22px;
+  padding: 10px;
+  border: 1px solid rgba(30, 45, 71, 0.78);
+  border-radius: 18px;
+  background: rgba(7, 14, 24, 0.72);
+}
+
+.radar-subnav a {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--ink-3);
+  padding: 9px 13px;
+  text-decoration: none;
+  transition: border-color 180ms ease, color 180ms ease, background 180ms ease;
+}
+
+.radar-subnav a:hover,
+.radar-subnav a.active {
+  background: rgba(79, 209, 255, 0.1);
+  border-color: rgba(79, 209, 255, 0.32);
+  color: var(--ink);
+}
+
+.radar-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.radar-form-grid label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.panel > label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink-3);
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+.radar-form-grid input,
+.radar-form-grid textarea,
+.radar-form-grid select,
+.panel > label textarea {
+  width: 100%;
+  border: 1px solid rgba(30, 45, 71, 0.92);
+  background: rgba(12, 21, 36, 0.94);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.radar-form-grid textarea,
+.panel > label textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.wide-field {
+  grid-column: 1 / -1;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex !important;
+  flex-direction: row;
+  gap: 10px !important;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.radar-flow-steps {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.radar-flow-steps span {
+  border: 1px solid rgba(30, 45, 71, 0.7);
+  border-radius: 14px;
+  background: rgba(12, 21, 36, 0.72);
+  color: var(--ink-2);
+  padding: 10px 12px;
+}
+
+.prompt-body-block {
+  white-space: pre-wrap;
+}
+
+.rendered-prompt-preview {
+  width: 100%;
+  min-height: 320px;
+  margin: 12px 0;
+  border: 1px solid rgba(30, 45, 71, 0.92);
+  background: rgba(5, 11, 20, 0.92);
+  color: var(--ink);
+  border-radius: 18px;
+  font-family: "IBM Plex Mono", Consolas, monospace;
+  line-height: 1.55;
+  padding: 14px;
+  resize: vertical;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.ghost-button {
+  border: 1px solid rgba(30, 45, 71, 0.82);
+  border-radius: 999px;
+  background: rgba(12, 21, 36, 0.72);
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 7px 11px;
+}
+
+.radar-json-input {
+  min-height: 240px;
+  resize: vertical;
+}
+
+.clickable-card {
+  cursor: pointer;
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.json-block-group {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.json-block {
+  margin: 8px 0 0;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(30, 45, 71, 0.92);
+  background: rgba(8, 16, 28, 0.82);
+  color: var(--ink);
+  overflow-x: auto;
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .task-form textarea {
