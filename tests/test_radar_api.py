@@ -693,3 +693,127 @@ def test_radar_portfolio_compare_rejects_missing_candidate(app_client, auth_head
         json={"candidate_ids": ["00000000-0000-0000-0000-000000000001"]},
     )
     assert response.status_code == 404
+
+
+def test_radar_promotion_preview_warns_and_lists_missing_fields(app_client, auth_headers):
+    response = app_client.post(
+        "/radar/candidates",
+        headers=auth_headers,
+        json={"slug": "promotion-preview-missing", "name": "Promotion Preview Missing"},
+    )
+    assert response.status_code == 201
+    candidate = response.json()
+
+    preview = app_client.get(f"/radar/candidates/{candidate['id']}/promotion/preview", headers=auth_headers)
+    assert preview.status_code == 200
+    payload = preview.json()
+    assert payload["recommended_target_type"] == "vertical_candidate"
+    assert "hypothesis_or_summary" in payload["missing_fields"]
+    assert any("verdict" in warning for warning in payload["warnings"])
+    assert payload["suggested_payload"]["slug"] == "promotion-preview-missing"
+
+
+def test_radar_promotion_requires_confirm_true(app_client, auth_headers):
+    candidate = create_candidate(app_client, auth_headers, "promotion-confirm-required")
+
+    response = app_client.post(
+        f"/radar/candidates/{candidate['id']}/promotion",
+        headers=auth_headers,
+        json={"target_type": "vertical_candidate", "confirm": False},
+    )
+    assert response.status_code == 422
+
+
+def test_radar_promotion_blocks_non_advance_without_override(app_client, auth_headers):
+    candidate = seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "promotion-non-advance",
+        {
+            "verdict": "ITERATE",
+            "hypothesis": "Interesting but not selected yet",
+        },
+    )
+
+    response = app_client.post(
+        f"/radar/candidates/{candidate['id']}/promotion",
+        headers=auth_headers,
+        json={"target_type": "vertical_candidate", "confirm": True},
+    )
+    assert response.status_code == 409
+    assert "ADVANCE" in response.json()["detail"]
+
+
+def test_radar_promotion_creates_vertical_candidate_link_and_is_idempotent(app_client, auth_headers, db_conn):
+    candidate = seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "promotion-advance",
+        {
+            "verdict": "ADVANCE",
+            "hypothesis": "A validated opportunity should enter Ashrise research.",
+            "summary": "Promotion target summary",
+            "focus": "quick_win",
+            "scope": "uruguay",
+            "maturity": "researched",
+            "scorecard": {"market": 8},
+            "gates": {"problem": "passed"},
+            "decision_memo": "Promote explicitly after portfolio review.",
+            "priority": 2,
+        },
+    )
+    evidence_response = app_client.post(
+        f"/radar/candidates/{candidate['id']}/evidence",
+        headers=auth_headers,
+        json={"kind": "interview", "title": "Buyer signal", "claim": "Buyer asked for a pilot."},
+    )
+    assert evidence_response.status_code == 201
+
+    preview = app_client.get(f"/radar/candidates/{candidate['id']}/promotion/preview", headers=auth_headers)
+    assert preview.status_code == 200
+    assert preview.json()["evidence_count"] == 1
+    assert preview.json()["existing_link"] is None
+
+    promoted = app_client.post(
+        f"/radar/candidates/{candidate['id']}/promotion",
+        headers=auth_headers,
+        json={
+            "target_type": "vertical_candidate",
+            "confirm": True,
+            "notes": "Approved manually from Radar F7 test.",
+            "create_decision": True,
+        },
+    )
+    assert promoted.status_code == 201
+    result = promoted.json()
+    assert result["ok"] is True
+    assert result["target_type"] == "vertical_candidate"
+    assert result["link"]["relation_type"] == "promoted_to"
+    assert any("create_decision" in warning for warning in result["warnings"])
+
+    vertical = db_conn.execute(
+        "SELECT * FROM vertical_candidates WHERE id = %s",
+        (result["target_id"],),
+    ).fetchone()
+    assert vertical is not None
+    assert vertical["slug"] == "promotion-advance"
+    assert vertical["category"] == "small-quickwin"
+    assert vertical["metadata"]["source"] == "radar"
+    assert vertical["metadata"]["radar_candidate_id"] == candidate["id"]
+    assert vertical["metadata"]["radar_evidence_count"] == 1
+
+    links = app_client.get(f"/radar/candidates/{candidate['id']}/links", headers=auth_headers)
+    assert links.status_code == 200
+    assert links.json()[0]["target_id"] == result["target_id"]
+
+    preview_after = app_client.get(f"/radar/candidates/{candidate['id']}/promotion/preview", headers=auth_headers)
+    assert preview_after.status_code == 200
+    assert preview_after.json()["existing_link"]["target_id"] == result["target_id"]
+
+    duplicate = app_client.post(
+        f"/radar/candidates/{candidate['id']}/promotion",
+        headers=auth_headers,
+        json={"target_type": "vertical_candidate", "confirm": True},
+    )
+    assert duplicate.status_code == 409
+    assert "already has" in duplicate.json()["detail"]

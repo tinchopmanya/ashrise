@@ -826,6 +826,27 @@ class RadarPortfolioCompareRequest(StrictModel):
         return value
 
 
+class RadarPromotionRequest(StrictModel):
+    target_type: Literal["vertical_candidate"] = "vertical_candidate"
+    confirm: bool
+    notes: str | None = None
+    create_decision: bool = False
+    force: bool = False
+    override_verdict: bool = False
+    created_by: str | None = None
+
+    @field_validator("notes", "created_by")
+    @classmethod
+    def validate_promotion_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @model_validator(mode="after")
+    def validate_confirmed(self):
+        if not self.confirm:
+            raise ValueError("confirm must be true to promote a Radar candidate")
+        return self
+
+
 class RadarEvidenceCreate(StrictModel):
     kind: str
     title: str | None = None

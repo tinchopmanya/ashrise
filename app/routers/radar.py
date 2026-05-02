@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.encoders import jsonable_encoder
 import psycopg
 from psycopg import sql
 
@@ -19,6 +20,7 @@ from app.schemas import (
     RadarFileImportCreate,
     RadarFileImportPatch,
     RadarPortfolioCompareRequest,
+    RadarPromotionRequest,
     RadarPromptCreate,
     RadarPromptPatch,
     RadarPromptRender,
@@ -35,6 +37,7 @@ ALLOWED_EXPORT_ENTITIES = {"candidates", "evidence", "signals", "prompts", "gold
 ALLOWED_SOURCE_TYPES = {"manual_paste", "drag_drop", "api", "file_watcher", "unknown"}
 RADAR_REVIEW_VERDICTS = {"ITERATE", "RESEARCH_MORE"}
 RADAR_REVIEW_MATURITIES = {"raw_signal", "candidate", "researched"}
+RADAR_ADVANCE_VERDICTS = {"ADVANCE"}
 RADAR_PROMPT_PLACEHOLDER_RE = re.compile(r"{{\s*([a-zA-Z0-9_\.]+)\s*}}")
 RADAR_CANDIDATE_MUTABLE_FIELDS = {
     "slug",
@@ -168,6 +171,23 @@ def serialize_radar_config(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_radar_candidate_link(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **row,
+        "id": str(row["id"]),
+        "radar_candidate_id": str(row["radar_candidate_id"]),
+    }
+
+
+def serialize_radar_promotion(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **row,
+        "id": str(row["id"]),
+        "radar_candidate_id": str(row["radar_candidate_id"]),
+        "payload_snapshot": row.get("payload_snapshot") or {},
+    }
+
+
 def serialize_portfolio_candidate(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(row["id"]),
@@ -190,6 +210,9 @@ def serialize_portfolio_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "evidence_count": int(row.get("evidence_count") or 0),
         "apply_log_count": int(row.get("apply_log_count") or 0),
         "last_apply_at": row.get("last_apply_at"),
+        "promoted_link_count": int(row.get("promoted_link_count") or 0),
+        "promoted_target_id": row.get("promoted_target_id"),
+        "promoted_target_slug": row.get("promoted_target_slug"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -203,7 +226,10 @@ def fetch_portfolio_candidates(conn: psycopg.Connection) -> list[dict[str, Any]]
             c.*,
             COALESCE(e.evidence_count, 0)::int AS evidence_count,
             COALESCE(a.apply_log_count, 0)::int AS apply_log_count,
-            a.last_apply_at
+            a.last_apply_at,
+            COALESCE(l.promoted_link_count, 0)::int AS promoted_link_count,
+            l.promoted_target_id,
+            l.promoted_target_slug
         FROM radar_candidates c
         LEFT JOIN (
             SELECT candidate_id, COUNT(*)::int AS evidence_count
@@ -216,6 +242,16 @@ def fetch_portfolio_candidates(conn: psycopg.Connection) -> list[dict[str, Any]]
             WHERE candidate_id IS NOT NULL
             GROUP BY candidate_id
         ) a ON a.candidate_id = c.id
+        LEFT JOIN (
+            SELECT
+                radar_candidate_id,
+                COUNT(*)::int AS promoted_link_count,
+                MIN(target_id) AS promoted_target_id,
+                MIN(target_slug) AS promoted_target_slug
+            FROM radar_candidate_links
+            WHERE target_type = 'vertical_candidate' AND relation_type = 'promoted_to'
+            GROUP BY radar_candidate_id
+        ) l ON l.radar_candidate_id = c.id
         ORDER BY c.updated_at DESC, c.slug
         """,
     )
@@ -278,6 +314,155 @@ def build_matrix(rows: list[dict[str, Any]], row_field: str, column_field: str) 
             ]
             cells.append({"row": row_value, "column": column_value, "count": len(candidates), "candidates": candidates})
     return {"rows": row_values, "columns": column_values, "cells": cells}
+
+
+def radar_candidate_evidence_count(conn: psycopg.Connection, candidate_id: UUID) -> int:
+    row = fetch_one(conn, "SELECT COUNT(*)::int AS count FROM radar_evidence WHERE candidate_id = %s", (candidate_id,))
+    return int(row["count"] if row else 0)
+
+
+def list_radar_candidate_links_rows(conn: psycopg.Connection, candidate_id: UUID) -> list[dict[str, Any]]:
+    return fetch_all(
+        conn,
+        "SELECT * FROM radar_candidate_links WHERE radar_candidate_id = %s ORDER BY created_at DESC, id DESC",
+        (candidate_id,),
+    )
+
+
+def existing_radar_promotion_link(conn: psycopg.Connection, candidate_id: UUID) -> dict[str, Any] | None:
+    return fetch_one(
+        conn,
+        """
+        SELECT *
+        FROM radar_candidate_links
+        WHERE radar_candidate_id = %s
+          AND target_type = 'vertical_candidate'
+          AND relation_type = 'promoted_to'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (candidate_id,),
+    )
+
+
+def vertical_candidate_category_for_radar(candidate: dict[str, Any]) -> str:
+    focus = candidate.get("focus")
+    build_level = candidate.get("build_level")
+    if focus == "quick_win":
+        return "small-quickwin"
+    if focus in {"moonshot", "unicorn_potential"}:
+        return "unicorn"
+    if focus in {"research_bet", "infra_layer"} or build_level in {"agent_workflow", "data_pipeline"}:
+        return "profound-ai"
+    if focus in {"mediano_plazo", "defensive_tool"}:
+        return "medium-long"
+    return "learning"
+
+
+def priority_for_vertical_candidate(candidate: dict[str, Any]) -> int | None:
+    priority = candidate.get("priority")
+    if priority is None:
+        return None
+    try:
+        return min(max(int(priority), 1), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def unique_vertical_candidate_slug(conn: psycopg.Connection, base_slug: str) -> str:
+    clean_slug = re.sub(r"[^a-z0-9-]+", "-", base_slug.lower()).strip("-") or "radar-candidate"
+    slug = clean_slug
+    suffix = 2
+    while fetch_one(conn, "SELECT id FROM vertical_candidates WHERE slug = %s", (slug,)) is not None:
+        slug = f"{clean_slug}-{suffix}"
+        suffix += 1
+    return slug
+
+
+def build_vertical_candidate_payload(
+    conn: psycopg.Connection,
+    candidate: dict[str, Any],
+    evidence_count: int,
+) -> dict[str, Any]:
+    slug = unique_vertical_candidate_slug(conn, candidate["slug"])
+    metadata = {
+        "source": "radar",
+        "radar_candidate_id": str(candidate["id"]),
+        "radar_candidate_slug": candidate["slug"],
+        "radar_verdict": candidate.get("verdict"),
+        "radar_strategy": {
+            "focus": candidate.get("focus"),
+            "scope": candidate.get("scope"),
+            "maturity": candidate.get("maturity"),
+            "build_level": candidate.get("build_level"),
+            "time_horizon": candidate.get("time_horizon"),
+            "expected_return": candidate.get("expected_return"),
+            "dominant_risk": candidate.get("dominant_risk"),
+            "validation_mode": candidate.get("validation_mode"),
+            "evidence_requirement": candidate.get("evidence_requirement"),
+            "buyer_type": candidate.get("buyer_type"),
+            "preferred_channel": candidate.get("preferred_channel"),
+            "initial_strategy": candidate.get("initial_strategy"),
+        },
+        "radar_scorecard": candidate.get("scorecard") or {},
+        "radar_gates": candidate.get("gates") or {},
+        "radar_next_research": candidate.get("next_research") or {},
+        "radar_evidence_count": evidence_count,
+    }
+    notes = "\n\n".join(
+        item
+        for item in [
+            candidate.get("decision_memo"),
+            candidate.get("notes"),
+        ]
+        if item
+    )
+    if notes:
+        metadata["radar_notes"] = notes
+    return {
+        "slug": slug,
+        "name": candidate["name"],
+        "category": vertical_candidate_category_for_radar(candidate),
+        "hypothesis": candidate.get("hypothesis") or candidate.get("summary") or f"Promoted from Radar candidate {candidate['slug']}.",
+        "problem_desc": candidate.get("summary") or candidate.get("decision_memo"),
+        "kill_criteria": candidate.get("kill_criteria") or [],
+        "status": "promising",
+        "priority": priority_for_vertical_candidate(candidate),
+        "metadata": metadata,
+    }
+
+
+def radar_promotion_preview(conn: psycopg.Connection, candidate: dict[str, Any]) -> dict[str, Any]:
+    candidate_id = candidate["id"]
+    evidence_count = radar_candidate_evidence_count(conn, candidate_id)
+    existing_link = existing_radar_promotion_link(conn, candidate_id)
+    missing_fields: list[str] = []
+    warnings: list[str] = []
+    if not candidate.get("hypothesis") and not candidate.get("summary"):
+        missing_fields.append("hypothesis_or_summary")
+        warnings.append("vertical_candidate.hypothesis will use a fallback because Radar hypothesis/summary is empty")
+    if not candidate.get("verdict"):
+        warnings.append("candidate has no Radar verdict")
+    elif str(candidate.get("verdict")).upper() not in RADAR_ADVANCE_VERDICTS:
+        warnings.append("candidate verdict is not ADVANCE; promotion requires override_verdict=true")
+    if evidence_count == 0:
+        warnings.append("candidate has no evidence yet")
+    if existing_link:
+        warnings.append("candidate already has a promoted_to vertical_candidate link")
+    payload = build_vertical_candidate_payload(conn, candidate, evidence_count)
+    return {
+        "candidate": serialize_radar_candidate(candidate),
+        "recommended_target_type": "vertical_candidate",
+        "target_type": "vertical_candidate",
+        "suggested_payload": payload,
+        "warnings": warnings,
+        "missing_fields": missing_fields,
+        "evidence_count": evidence_count,
+        "decision_memo": candidate.get("decision_memo"),
+        "verdict": candidate.get("verdict"),
+        "existing_link": serialize_radar_candidate_link(existing_link) if existing_link else None,
+        "links": [serialize_radar_candidate_link(row) for row in list_radar_candidate_links_rows(conn, candidate_id)],
+    }
 
 
 def get_radar_candidate_or_404(conn: psycopg.Connection, candidate_id: UUID):
@@ -813,6 +998,95 @@ def patch_radar_candidate(
     return serialize_radar_candidate(row)
 
 
+@router.get("/candidates/{candidate_id}/links")
+def list_radar_candidate_links(candidate_id: UUID, conn: psycopg.Connection = Depends(get_db)):
+    get_radar_candidate_or_404(conn, candidate_id)
+    return [serialize_radar_candidate_link(row) for row in list_radar_candidate_links_rows(conn, candidate_id)]
+
+
+@router.get("/candidates/{candidate_id}/promotion/preview")
+def preview_radar_candidate_promotion(candidate_id: UUID, conn: psycopg.Connection = Depends(get_db)):
+    candidate = get_radar_candidate_or_404(conn, candidate_id)
+    return radar_promotion_preview(conn, candidate)
+
+
+@router.post("/candidates/{candidate_id}/promotion", status_code=201)
+def promote_radar_candidate(
+    candidate_id: UUID,
+    payload: RadarPromotionRequest,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    candidate = get_radar_candidate_or_404(conn, candidate_id)
+    preview = radar_promotion_preview(conn, candidate)
+    warnings = list(preview["warnings"])
+    existing_link = preview["existing_link"]
+    if existing_link and not payload.force:
+        raise HTTPException(
+            status_code=409,
+            detail="Radar candidate already has a promoted_to vertical_candidate link; use force=true to create another explicit promotion",
+        )
+    if str(candidate.get("verdict") or "").upper() not in RADAR_ADVANCE_VERDICTS and not payload.override_verdict:
+        raise HTTPException(
+            status_code=409,
+            detail="Radar candidate verdict must be ADVANCE before promotion unless override_verdict=true",
+        )
+    if payload.create_decision:
+        warnings.append("create_decision was requested but no Ashrise project exists yet; traceability was stored in radar_promotions and radar_candidate_links")
+
+    promotion = insert_row(
+        conn,
+        "radar_promotions",
+        {
+            "radar_candidate_id": candidate_id,
+            "status": "previewed",
+            "target_type": payload.target_type,
+            "payload_snapshot": jsonable_encoder({
+                "candidate": preview["candidate"],
+                "suggested_payload": preview["suggested_payload"],
+                "warnings": warnings,
+                "notes": payload.notes,
+            }),
+        },
+    )
+    target = insert_row(conn, "vertical_candidates", preview["suggested_payload"])
+    link = insert_row(
+        conn,
+        "radar_candidate_links",
+        {
+            "radar_candidate_id": candidate_id,
+            "target_type": "vertical_candidate",
+            "target_id": str(target["id"]),
+            "target_slug": target["slug"],
+            "relation_type": "promoted_to",
+            "created_by": payload.created_by,
+            "notes": payload.notes,
+        },
+    )
+    completed = update_row(
+        conn,
+        "radar_promotions",
+        {"id": promotion["id"]},
+        {
+            "status": "promoted",
+            "target_id": str(target["id"]),
+            "completed_at": datetime.now(timezone.utc),
+        },
+    )
+
+    return {
+        "ok": True,
+        "radar_candidate_id": str(candidate_id),
+        "target_type": "vertical_candidate",
+        "target_id": str(target["id"]),
+        "target_slug": target["slug"],
+        "link_id": str(link["id"]),
+        "promotion_id": str(completed["id"]) if completed else str(promotion["id"]),
+        "warnings": warnings,
+        "target": target,
+        "link": serialize_radar_candidate_link(link),
+    }
+
+
 @router.delete("/candidates/{candidate_id}", status_code=204)
 def delete_radar_candidate(candidate_id: UUID, conn: psycopg.Connection = Depends(get_db)):
     deleted = fetch_one(conn, "DELETE FROM radar_candidates WHERE id = %s RETURNING id", (candidate_id,))
@@ -1224,7 +1498,10 @@ def compare_radar_portfolio_candidates(
             c.*,
             COALESCE(e.evidence_count, 0)::int AS evidence_count,
             COALESCE(a.apply_log_count, 0)::int AS apply_log_count,
-            a.last_apply_at
+            a.last_apply_at,
+            COALESCE(l.promoted_link_count, 0)::int AS promoted_link_count,
+            l.promoted_target_id,
+            l.promoted_target_slug
         FROM radar_candidates c
         LEFT JOIN (
             SELECT candidate_id, COUNT(*)::int AS evidence_count
@@ -1237,6 +1514,16 @@ def compare_radar_portfolio_candidates(
             WHERE candidate_id IS NOT NULL
             GROUP BY candidate_id
         ) a ON a.candidate_id = c.id
+        LEFT JOIN (
+            SELECT
+                radar_candidate_id,
+                COUNT(*)::int AS promoted_link_count,
+                MIN(target_id) AS promoted_target_id,
+                MIN(target_slug) AS promoted_target_slug
+            FROM radar_candidate_links
+            WHERE target_type = 'vertical_candidate' AND relation_type = 'promoted_to'
+            GROUP BY radar_candidate_id
+        ) l ON l.radar_candidate_id = c.id
         WHERE c.id = ANY(%s::uuid[])
         ORDER BY c.updated_at DESC, c.slug
         """,

@@ -27,11 +27,13 @@ import {
   getRadarCandidates,
   getRadarConfig,
   getRadarFileImports,
+  getRadarCandidateLinks,
   getRadarPortfolioFocusScopeMatrix,
   getRadarPortfolioMaturityVerdictMatrix,
   getRadarPortfolioOverview,
   getRadarPortfolioRiskDistribution,
   getRadarPortfolioSelectionQueue,
+  getRadarPromotionPreview,
   getRadarPrompt,
   getRadarPromptRuns,
   getRadarPrompts,
@@ -61,6 +63,7 @@ import {
   getTelegramSummary,
   getSystemHealth,
   promoteCandidate,
+  promoteRadarCandidate,
   markRadarPromptRunCopied,
   requeueResearchQueue,
   renderRadarPromptVersion,
@@ -104,8 +107,10 @@ import type {
   RadarConfigItem,
   RadarEvidence,
   RadarFileImport,
+  RadarCandidateLink,
   RadarPortfolioCandidate,
   RadarPortfolioMatrix,
+  RadarPromotionPreview,
   RadarPrompt,
   RadarPromptRenderResult,
   RadarPromptRun,
@@ -5425,8 +5430,10 @@ function RadarPortfolioCandidateTable({ candidates, showReasons = false }: { can
             <th>focus</th>
             <th>scope</th>
             <th>risk</th>
+            <th>promotion</th>
             <th>evidence</th>
             <th>updated</th>
+            <th>action</th>
             {showReasons ? <th>reasons</th> : null}
           </tr>
         </thead>
@@ -5442,8 +5449,16 @@ function RadarPortfolioCandidateTable({ candidates, showReasons = false }: { can
               <td>{candidate.focus || "—"}</td>
               <td>{candidate.scope || "—"}</td>
               <td>{candidate.dominant_risk || "—"}</td>
+              <td>
+                {candidate.promoted_link_count > 0 ? (
+                  <span className="meta-pill">Promoted {candidate.promoted_target_slug || candidate.promoted_target_id}</span>
+                ) : (
+                  "—"
+                )}
+              </td>
               <td>{candidate.evidence_count}</td>
               <td>{formatDateTime(candidate.updated_at)}</td>
+              <td><Link to={`/radar/candidates/${candidate.id}`}>Promote</Link></td>
               {showReasons ? <td>{candidate.reasons?.join(", ") || "—"}</td> : null}
             </tr>
           ))}
@@ -5572,16 +5587,23 @@ function RadarCandidateDetailPage() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState({ kind: "web_note", title: "", claim: "", url: "", source_name: "", confidence: "" });
+  const [promotionNotes, setPromotionNotes] = useState("");
+  const [promotionOverride, setPromotionOverride] = useState(false);
+  const [promotionForce, setPromotionForce] = useState(false);
+  const [promotionCreateDecision, setPromotionCreateDecision] = useState(false);
 
   const candidateQuery = useQuery({ queryKey: ["radar-candidate", candidateId], queryFn: () => getRadarCandidate(candidateId), enabled: Boolean(candidateId) });
   const evidenceQuery = useQuery({ queryKey: ["radar-evidence", candidateId], queryFn: () => getRadarCandidateEvidence(candidateId), enabled: Boolean(candidateId) });
   const logsQuery = useQuery({ queryKey: ["radar-apply-logs", candidateId], queryFn: () => getRadarApplyLogs({ candidate_id: candidateId, limit: "8" }), enabled: Boolean(candidateId) });
   const configQuery = useQuery({ queryKey: ["radar-config"], queryFn: getRadarConfig });
+  const linksQuery = useQuery({ queryKey: ["radar-candidate-links", candidateId], queryFn: () => getRadarCandidateLinks(candidateId), enabled: Boolean(candidateId) });
 
   const candidate = candidateQuery.data;
   const evidence = evidenceQuery.data || [];
   const logs = logsQuery.data || [];
   const config = configQuery.data || [];
+  const links = linksQuery.data || [];
+  const promotedLink = links.find((link) => link.target_type === "vertical_candidate" && link.relation_type === "promoted_to") || null;
 
   useEffect(() => {
     if (!candidate) {
@@ -5653,6 +5675,39 @@ function RadarCandidateDetailPage() {
     mutationFn: deleteRadarEvidence,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["radar-evidence", candidateId] }),
   });
+
+  const promotionPreviewMutation = useMutation<RadarPromotionPreview, Error>({
+    mutationFn: () => getRadarPromotionPreview(candidateId),
+  });
+
+  const promotionMutation = useMutation({
+    mutationFn: () =>
+      promoteRadarCandidate(candidateId, {
+        target_type: "vertical_candidate",
+        confirm: true,
+        notes: nullIfBlank(promotionNotes),
+        create_decision: promotionCreateDecision,
+        force: promotionForce,
+        override_verdict: promotionOverride,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["radar-candidate-links", candidateId] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-selection-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-candidates"] });
+      promotionPreviewMutation.mutate();
+    },
+  });
+
+  function handleConfirmPromotion() {
+    if (!promotionPreviewMutation.data) {
+      return;
+    }
+    if (!window.confirm("Promote this Radar candidate to an Ashrise vertical_candidate? This will create an explicit link but will not create a project.")) {
+      return;
+    }
+    promotionMutation.mutate();
+  }
 
   if (candidateQuery.isLoading) {
     return (
@@ -5728,6 +5783,95 @@ function RadarCandidateDetailPage() {
               {updateMutation.error instanceof Error ? <span className="form-error">{updateMutation.error.message}</span> : null}
             </div>
           </form>
+        </Section>
+
+        <Section title="Promotion to Ashrise" eyebrow="Explicit bridge" stagger={1}>
+          <div className="stack-list">
+            <article className="list-card">
+              <div className="row spread">
+                <div>
+                  <h4>{promotedLink ? "Promoted" : "Not promoted yet"}</h4>
+                  <p className="muted-copy">Promotion creates an Ashrise vertical_candidate and a Radar link. It does not create a project automatically.</p>
+                </div>
+                <StatusChip value={promotedLink ? "promoted" : "manual"} />
+              </div>
+              {linksQuery.isLoading ? (
+                <SkeletonBlock height={80} />
+              ) : links.length === 0 ? (
+                <p className="muted-copy">No links yet.</p>
+              ) : (
+                <div className="stack-list compact">
+                  {links.map((link: RadarCandidateLink) => (
+                    <article className="list-card" key={link.id}>
+                      <div className="row spread">
+                        <div>
+                          <h4>{link.target_slug || link.target_id}</h4>
+                          <p>{link.relation_type} / {link.target_type}</p>
+                        </div>
+                        <span className="meta-pill">{formatDateTime(link.created_at)}</span>
+                      </div>
+                      {link.notes ? <p>{link.notes}</p> : null}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="list-card">
+              <div className="hero-actions">
+                <button className="secondary-button" type="button" disabled={promotionPreviewMutation.isPending} onClick={() => promotionPreviewMutation.mutate()}>
+                  {promotionPreviewMutation.isPending ? "Previewing..." : "Preview promotion"}
+                </button>
+              </div>
+              {promotionPreviewMutation.error instanceof Error ? <p className="form-error">{promotionPreviewMutation.error.message}</p> : null}
+              {promotionPreviewMutation.data ? (
+                <div className="json-block-group">
+                  <div>
+                    <span className="eyebrow">warnings</span>
+                    {promotionPreviewMutation.data.warnings.length === 0 ? (
+                      <p className="form-success">No warnings.</p>
+                    ) : (
+                      <ul className="compact-list">
+                        {promotionPreviewMutation.data.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <span className="eyebrow">suggested vertical_candidate payload</span>
+                    <pre className="json-block">{prettyJson(promotionPreviewMutation.data.suggested_payload)}</pre>
+                  </div>
+                </div>
+              ) : null}
+            </article>
+
+            <article className="list-card">
+              <label>
+                Promotion notes
+                <textarea value={promotionNotes} onChange={(event) => setPromotionNotes(event.target.value)} placeholder="Why this candidate is entering Ashrise." />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={promotionCreateDecision} onChange={(event) => setPromotionCreateDecision(event.target.checked)} />
+                Request decision logging if a project context exists
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={promotionOverride} onChange={(event) => setPromotionOverride(event.target.checked)} />
+                Override non-ADVANCE verdict
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={promotionForce} onChange={(event) => setPromotionForce(event.target.checked)} />
+                Force a new promotion if a link already exists
+              </label>
+              <div className="hero-actions">
+                <button className="primary-button" type="button" disabled={!promotionPreviewMutation.data || promotionMutation.isPending} onClick={handleConfirmPromotion}>
+                  {promotionMutation.isPending ? "Promoting..." : "Confirm Promote"}
+                </button>
+              </div>
+              {promotionMutation.data ? (
+                <p className="form-success">Promoted to {promotionMutation.data.target_slug || promotionMutation.data.target_id}.</p>
+              ) : null}
+              {promotionMutation.error instanceof Error ? <p className="form-error">{promotionMutation.error.message}</p> : null}
+            </article>
+          </div>
         </Section>
 
         <Section title="Evaluation" eyebrow="Applied JSON state" stagger={1}>

@@ -48,6 +48,10 @@ import type {
   RadarPortfolioCompareResponse,
   RadarPortfolioMatrix,
   RadarPortfolioOverview,
+  RadarPromotionRequest,
+  RadarPromotionResult,
+  RadarPromotionPreview,
+  RadarCandidateLink,
   RadarRiskDistributionItem,
   RadarSelectionQueueItem,
   RadarPromptRenderInput,
@@ -311,6 +315,21 @@ export function compareRadarPortfolioCandidates(candidateIds: string[]) {
   return dashboardWrite<RadarPortfolioCompareResponse>("/radar/portfolio/compare", {
     method: "POST",
     body: JSON.stringify({ candidate_ids: candidateIds }),
+  });
+}
+
+export function getRadarCandidateLinks(candidateId: string) {
+  return dashboardFetch<RadarCandidateLink[]>(`/radar/candidates/${candidateId}/links`);
+}
+
+export function getRadarPromotionPreview(candidateId: string) {
+  return dashboardFetch<RadarPromotionPreview>(`/radar/candidates/${candidateId}/promotion/preview`);
+}
+
+export function promoteRadarCandidate(candidateId: string, payload: RadarPromotionRequest) {
+  return dashboardWrite<RadarPromotionResult>(`/radar/candidates/${candidateId}/promotion`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

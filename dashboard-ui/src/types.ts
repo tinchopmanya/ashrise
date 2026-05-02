@@ -482,6 +482,9 @@ export type RadarPortfolioCandidate = Pick<
   evidence_count: number;
   apply_log_count: number;
   last_apply_at: string | null;
+  promoted_link_count: number;
+  promoted_target_id: string | null;
+  promoted_target_slug: string | null;
 };
 
 export type RadarPortfolioOverview = {
@@ -521,6 +524,55 @@ export type RadarSelectionQueueItem = RadarPortfolioCandidate & {
 
 export type RadarPortfolioCompareResponse = {
   items: RadarPortfolioCandidate[];
+};
+
+export type RadarCandidateLink = {
+  id: string;
+  radar_candidate_id: string;
+  target_type: "vertical_candidate" | "project" | "idea" | "task" | "decision";
+  target_id: string;
+  target_slug: string | null;
+  relation_type: "promoted_to" | "linked_to" | "absorbed_into" | "spawned_project";
+  created_by: string | null;
+  created_at: string;
+  notes: string | null;
+};
+
+export type RadarPromotionPreview = {
+  candidate: RadarCandidate;
+  recommended_target_type: "vertical_candidate";
+  target_type: "vertical_candidate";
+  suggested_payload: Record<string, unknown>;
+  warnings: string[];
+  missing_fields: string[];
+  evidence_count: number;
+  decision_memo: string | null;
+  verdict: string | null;
+  existing_link: RadarCandidateLink | null;
+  links: RadarCandidateLink[];
+};
+
+export type RadarPromotionRequest = {
+  target_type: "vertical_candidate";
+  confirm: boolean;
+  notes?: string | null;
+  create_decision?: boolean;
+  force?: boolean;
+  override_verdict?: boolean;
+  created_by?: string | null;
+};
+
+export type RadarPromotionResult = {
+  ok: boolean;
+  radar_candidate_id: string;
+  target_type: "vertical_candidate";
+  target_id: string;
+  target_slug: string;
+  link_id: string;
+  promotion_id: string;
+  warnings: string[];
+  target: Record<string, unknown>;
+  link: RadarCandidateLink;
 };
 
 export type RadarEvidence = {
