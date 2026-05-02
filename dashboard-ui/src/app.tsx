@@ -13,6 +13,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 
 import {
   applyRadarJson,
+  compareRadarPortfolioCandidates,
   createRadarCandidate,
   createRadarCandidateEvidence,
   createRadarPrompt,
@@ -26,6 +27,11 @@ import {
   getRadarCandidates,
   getRadarConfig,
   getRadarFileImports,
+  getRadarPortfolioFocusScopeMatrix,
+  getRadarPortfolioMaturityVerdictMatrix,
+  getRadarPortfolioOverview,
+  getRadarPortfolioRiskDistribution,
+  getRadarPortfolioSelectionQueue,
   getRadarPrompt,
   getRadarPromptRuns,
   getRadarPrompts,
@@ -98,6 +104,8 @@ import type {
   RadarConfigItem,
   RadarEvidence,
   RadarFileImport,
+  RadarPortfolioCandidate,
+  RadarPortfolioMatrix,
   RadarPrompt,
   RadarPromptRenderResult,
   RadarPromptRun,
@@ -1384,6 +1392,7 @@ function ProjectDetailPage() {
     </AppShell>
   );
 }
+
 function ProjectSummary({ data }: { data: ProjectDetailResponse }) {
   const queryClient = useQueryClient();
   const [editingState, setEditingState] = useState(false);
@@ -2051,6 +2060,7 @@ function ProjectDecisions({ data }: { data: ProjectDetailResponse }) {
     </Section>
   );
 }
+
 function ProjectAudit({ data }: { data: ProjectDetailResponse }) {
   return (
     <Section title="Latest audit" eyebrow="Read-only" stagger={1}>
@@ -3361,6 +3371,7 @@ function HandoffsPage() {
     </AppShell>
   );
 }
+
 function parseTagsInput(value: string) {
   return value
     .split(",")
@@ -3380,7 +3391,6 @@ function TaskCountsCluster({ counts }: { counts: TaskCounts }) {
     </div>
   );
 }
-
 function IdeaTreeCard({
   idea,
   active,
@@ -4970,6 +4980,7 @@ function ActivityFeedPage() {
 const radarShellItems = [
   { to: "/radar", label: "Overview" },
   { to: "/radar/candidates", label: "Candidates" },
+  { to: "/radar/portfolio", label: "Portfolio" },
   { to: "/radar/prompts", label: "Prompts" },
   { to: "/radar/prompt-runs", label: "Prompt Runs" },
   { to: "/radar/import", label: "Import JSON" },
@@ -4993,6 +5004,7 @@ const radarStrategyFields = [
 ] as const;
 
 const radarTaxonomyKeys = [...radarStrategyFields] as const;
+const radarPortfolioVerdicts = ["KILL", "PARK", "ITERATE", "ADVANCE", "ABSORB"] as const;
 
 const radarCandidateFieldLabels: Record<(typeof radarStrategyFields)[number], string> = {
   focus: "Focus",
@@ -5343,6 +5355,218 @@ function RadarCandidatesPage() {
   );
 }
 
+function RadarCountList({ items }: { items: { value: string; count: number }[] }) {
+  if (items.length === 0) {
+    return <StateScreen title="Sin datos" body="Todavia no hay candidates para agrupar." />;
+  }
+  return (
+    <div className="stack-list compact">
+      {items.map((item) => (
+        <article className="list-card" key={item.value}>
+          <div className="row spread">
+            <h4>{item.value}</h4>
+            <span className="meta-pill">{item.count}</span>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function RadarMatrixTable({ matrix }: { matrix: RadarPortfolioMatrix }) {
+  if (matrix.rows.length === 0 || matrix.columns.length === 0) {
+    return <StateScreen title="Matriz vacia" body="Todavia no hay candidates suficientes para esta matriz." />;
+  }
+  const cellFor = (row: string, column: string) => matrix.cells.find((cell) => cell.row === row && cell.column === column);
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>dimension</th>
+            {matrix.columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {matrix.rows.map((row) => (
+            <tr key={row}>
+              <td><strong>{row}</strong></td>
+              {matrix.columns.map((column) => {
+                const cell = cellFor(row, column);
+                return (
+                  <td key={`${row}-${column}`}>
+                    <span className="meta-pill">{cell?.count || 0}</span>
+                    {cell?.candidates.length ? <div className="cell-subtitle">{cell.candidates.slice(0, 3).map((item) => item.slug).join(", ")}</div> : null}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RadarPortfolioCandidateTable({ candidates, showReasons = false }: { candidates: (RadarPortfolioCandidate & { reasons?: string[] })[]; showReasons?: boolean }) {
+  if (candidates.length === 0) {
+    return <StateScreen title="Sin candidates" body="No hay candidates para esta seccion." />;
+  }
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>verdict</th>
+            <th>maturity</th>
+            <th>focus</th>
+            <th>scope</th>
+            <th>risk</th>
+            <th>evidence</th>
+            <th>updated</th>
+            {showReasons ? <th>reasons</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {candidates.map((candidate) => (
+            <tr key={candidate.id}>
+              <td>
+                <Link className="cell-title" to={`/radar/candidates/${candidate.id}`}>{candidate.name}</Link>
+                <div className="cell-subtitle">{candidate.slug}</div>
+              </td>
+              <td>{candidate.verdict ? <StatusChip value={candidate.verdict} /> : "—"}</td>
+              <td>{candidate.maturity || "—"}</td>
+              <td>{candidate.focus || "—"}</td>
+              <td>{candidate.scope || "—"}</td>
+              <td>{candidate.dominant_risk || "—"}</td>
+              <td>{candidate.evidence_count}</td>
+              <td>{formatDateTime(candidate.updated_at)}</td>
+              {showReasons ? <td>{candidate.reasons?.join(", ") || "—"}</td> : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RadarPortfolioPage() {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const overviewQuery = useQuery({ queryKey: ["radar-portfolio-overview"], queryFn: getRadarPortfolioOverview });
+  const focusScopeQuery = useQuery({ queryKey: ["radar-portfolio-focus-scope"], queryFn: getRadarPortfolioFocusScopeMatrix });
+  const maturityVerdictQuery = useQuery({ queryKey: ["radar-portfolio-maturity-verdict"], queryFn: getRadarPortfolioMaturityVerdictMatrix });
+  const riskQuery = useQuery({ queryKey: ["radar-portfolio-risk"], queryFn: getRadarPortfolioRiskDistribution });
+  const queueQuery = useQuery({ queryKey: ["radar-portfolio-selection-queue"], queryFn: getRadarPortfolioSelectionQueue });
+  const candidatesQuery = useQuery({ queryKey: ["radar-candidates"], queryFn: getRadarCandidates });
+  const compareMutation = useMutation({ mutationFn: () => compareRadarPortfolioCandidates(selectedIds) });
+
+  const overview = overviewQuery.data;
+  const candidates = candidatesQuery.data || [];
+  const compared = compareMutation.data?.items || [];
+  const isLoading = overviewQuery.isLoading || focusScopeQuery.isLoading || maturityVerdictQuery.isLoading || riskQuery.isLoading || queueQuery.isLoading;
+  const error =
+    overviewQuery.error ||
+    focusScopeQuery.error ||
+    maturityVerdictQuery.error ||
+    riskQuery.error ||
+    queueQuery.error;
+
+  function toggleCompare(candidateId: string) {
+    setSelectedIds((current) =>
+      current.includes(candidateId)
+        ? current.filter((item) => item !== candidateId)
+        : current.length < 8
+          ? [...current, candidateId]
+          : current,
+    );
+  }
+
+  return (
+    <RadarShell title="Radar Portfolio" subtitle="Review minimo para comparar candidatas y decidir kill, park, iterate, advance o absorb.">
+      {isLoading ? (
+        <SkeletonBlock height={540} />
+      ) : error || !overview ? (
+        <StateScreen title="No pude cargar portfolio" body={error instanceof Error ? error.message : "Portfolio no disponible."} tone="bad" />
+      ) : (
+        <div className="dashboard-grid">
+          <div className="kpi-grid">
+            <KpiCard label="Total candidates" value={overview.total_candidates} note="Radar discovery portfolio" stagger={0} />
+            <KpiCard label="Without verdict" value={overview.candidates_without_verdict.length} note="requieren decision" stagger={1} live={overview.candidates_without_verdict.length > 0} />
+            <KpiCard label="Without evidence" value={overview.candidates_without_evidence.length} note="evidence_count = 0" stagger={2} />
+            <KpiCard label="Failed gates" value={overview.candidates_with_failed_gates.length} note="gates false/weak/red" stagger={3} />
+          </div>
+
+          <Section title="Focus x Scope" eyebrow="Matrix" stagger={1}>
+            {focusScopeQuery.data ? <RadarMatrixTable matrix={focusScopeQuery.data} /> : null}
+          </Section>
+
+          <Section title="Maturity x Verdict" eyebrow="Matrix" stagger={2}>
+            {maturityVerdictQuery.data ? <RadarMatrixTable matrix={maturityVerdictQuery.data} /> : null}
+          </Section>
+
+          <Section title="Risk distribution" eyebrow="Dominant risk" stagger={3}>
+            <div className="stack-list compact">
+              {(riskQuery.data || []).map((item) => (
+                <article className="list-card" key={item.dominant_risk}>
+                  <div className="row spread">
+                    <h4>{item.dominant_risk}</h4>
+                    <span className="meta-pill">{item.count}</span>
+                  </div>
+                  <p>{item.candidates.slice(0, 4).map((candidate) => candidate.slug).join(", ") || "Sin candidates."}</p>
+                </article>
+              ))}
+            </div>
+          </Section>
+
+          <Section title="Selection Queue" eyebrow="Needs decision" stagger={4} aside={<span className="meta-pill">{queueQuery.data?.length || 0}</span>}>
+            <RadarPortfolioCandidateTable candidates={queueQuery.data || []} showReasons />
+          </Section>
+
+          <Section title="Compare candidates" eyebrow="Side by side" stagger={5}>
+            <div className="filters">
+              <select
+                value=""
+                onChange={(event) => {
+                  if (event.target.value) {
+                    toggleCompare(event.target.value);
+                  }
+                }}
+              >
+                <option value="">Agregar candidate a compare</option>
+                {candidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                ))}
+              </select>
+              <button className="primary-button" type="button" disabled={selectedIds.length === 0 || compareMutation.isPending} onClick={() => compareMutation.mutate()}>
+                {compareMutation.isPending ? "Comparing..." : "Compare"}
+              </button>
+            </div>
+            <div className="meta-row">
+              {selectedIds.map((candidateId) => {
+                const candidate = candidates.find((item) => item.id === candidateId);
+                return (
+                  <button className="meta-pill" key={candidateId} type="button" onClick={() => toggleCompare(candidateId)}>
+                    {candidate?.slug || candidateId} x
+                  </button>
+                );
+              })}
+            </div>
+            {compareMutation.error instanceof Error ? <p className="form-error">{compareMutation.error.message}</p> : null}
+            {compared.length ? <RadarPortfolioCandidateTable candidates={compared} /> : <StateScreen title="Sin comparacion" body="Elegí 2 o mas candidates para compararlas en tabla simple." />}
+          </Section>
+
+          <Section title="Verdict counts" eyebrow="Distribution" stagger={6}>
+            <RadarCountList items={overview.count_by_verdict} />
+          </Section>
+        </div>
+      )}
+    </RadarShell>
+  );
+}
+
 function RadarCandidateDetailPage() {
   const { candidateId = "" } = useParams();
   const queryClient = useQueryClient();
@@ -5395,6 +5619,20 @@ function RadarCandidateDetailPage() {
     },
   });
 
+  const quickVerdictMutation = useMutation({
+    mutationFn: (verdict: string) => updateRadarCandidate(candidateId, { verdict }),
+    onSuccess: (updatedCandidate) => {
+      setForm((current) => ({ ...current, verdict: updatedCandidate.verdict || "" }));
+      queryClient.invalidateQueries({ queryKey: ["radar-candidate", candidateId] });
+      queryClient.invalidateQueries({ queryKey: ["radar-candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-focus-scope"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-maturity-verdict"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-risk"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-portfolio-selection-queue"] });
+    },
+  });
+
   const createEvidenceMutation = useMutation({
     mutationFn: () =>
       createRadarCandidateEvidence(candidateId, {
@@ -5436,6 +5674,30 @@ function RadarCandidateDetailPage() {
     <RadarShell title={candidate.name} subtitle="Summary, strategy, evaluation, evidence y apply logs de discovery.">
       <div className="dashboard-grid">
         <Section title="Summary + Strategy" eyebrow={candidate.slug} stagger={0}>
+          <div className="list-card">
+            <div className="row spread">
+              <div>
+                <div className="eyebrow">Portfolio decision</div>
+                <p className="muted-copy">Set verdict rapido para revisar el portfolio sin promocionar automaticamente.</p>
+              </div>
+              <StatusChip value={form.verdict || "without verdict"} />
+            </div>
+            <div className="hero-actions">
+              {radarPortfolioVerdicts.map((verdict) => (
+                <button
+                  className={form.verdict === verdict ? "primary-button" : "secondary-button"}
+                  disabled={quickVerdictMutation.isPending}
+                  key={verdict}
+                  onClick={() => quickVerdictMutation.mutate(verdict)}
+                  type="button"
+                >
+                  Set {verdict}
+                </button>
+              ))}
+            </div>
+            {quickVerdictMutation.isSuccess ? <p className="form-success">Verdict actualizado.</p> : null}
+            {quickVerdictMutation.error instanceof Error ? <p className="form-error">{quickVerdictMutation.error.message}</p> : null}
+          </div>
           <form
             className="radar-form-grid"
             onSubmit={(event) => {
@@ -7198,6 +7460,7 @@ export function App() {
       <Route path="/radar" element={<RadarOverviewPage />} />
       <Route path="/radar/candidates" element={<RadarCandidatesPage />} />
       <Route path="/radar/candidates/:candidateId" element={<RadarCandidateDetailPage />} />
+      <Route path="/radar/portfolio" element={<RadarPortfolioPage />} />
       <Route path="/radar/prompts" element={<RadarPromptsPage />} />
       <Route path="/radar/prompts/:promptId" element={<RadarPromptDetailPage />} />
       <Route path="/radar/prompt-runs" element={<RadarPromptRunsPage />} />
@@ -7224,4 +7487,3 @@ export function App() {
     </Routes>
   );
 }
-

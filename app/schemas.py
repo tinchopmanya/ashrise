@@ -811,6 +811,21 @@ class RadarFileImportPatch(StrictModel):
         return normalize_text(value)
 
 
+class RadarPortfolioCompareRequest(StrictModel):
+    candidate_ids: list[UUID]
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def validate_candidate_ids(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("candidate_ids must include at least one candidate")
+        if len(value) > 8:
+            raise ValueError("candidate_ids can include at most 8 candidates")
+        if len(set(value)) != len(value):
+            raise ValueError("candidate_ids must not contain duplicates")
+        return value
+
+
 class RadarEvidenceCreate(StrictModel):
     kind: str
     title: str | None = None

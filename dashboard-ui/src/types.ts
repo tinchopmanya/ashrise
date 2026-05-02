@@ -457,6 +457,72 @@ export type RadarCandidateInput = {
   metadata?: Record<string, unknown>;
 };
 
+export type RadarPortfolioCandidate = Pick<
+  RadarCandidate,
+  | "id"
+  | "slug"
+  | "name"
+  | "summary"
+  | "hypothesis"
+  | "focus"
+  | "scope"
+  | "maturity"
+  | "build_level"
+  | "dominant_risk"
+  | "verdict"
+  | "priority"
+  | "scorecard"
+  | "gates"
+  | "decision_memo"
+  | "next_research"
+  | "kill_criteria"
+  | "created_at"
+  | "updated_at"
+> & {
+  evidence_count: number;
+  apply_log_count: number;
+  last_apply_at: string | null;
+};
+
+export type RadarPortfolioOverview = {
+  total_candidates: number;
+  count_by_verdict: { value: string; count: number }[];
+  count_by_maturity: { value: string; count: number }[];
+  count_by_focus: { value: string; count: number }[];
+  count_by_scope: { value: string; count: number }[];
+  count_by_dominant_risk: { value: string; count: number }[];
+  count_by_build_level: { value: string; count: number }[];
+  candidates_without_verdict: RadarPortfolioCandidate[];
+  candidates_without_evidence: RadarPortfolioCandidate[];
+  candidates_with_failed_gates: RadarPortfolioCandidate[];
+  recently_updated_candidates: RadarPortfolioCandidate[];
+};
+
+export type RadarPortfolioMatrix = {
+  rows: string[];
+  columns: string[];
+  cells: {
+    row: string;
+    column: string;
+    count: number;
+    candidates: Pick<RadarPortfolioCandidate, "id" | "slug" | "name">[];
+  }[];
+};
+
+export type RadarRiskDistributionItem = {
+  dominant_risk: string;
+  count: number;
+  candidates: RadarPortfolioCandidate[];
+};
+
+export type RadarSelectionQueueItem = RadarPortfolioCandidate & {
+  reasons: string[];
+};
+
+export type RadarPortfolioCompareResponse = {
+  items: RadarPortfolioCandidate[];
+};
+
 export type RadarEvidence = {
   id: string;
   candidate_id: string;

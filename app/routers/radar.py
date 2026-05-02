@@ -18,6 +18,7 @@ from app.schemas import (
     RadarEvidenceCreate,
     RadarFileImportCreate,
     RadarFileImportPatch,
+    RadarPortfolioCompareRequest,
     RadarPromptCreate,
     RadarPromptPatch,
     RadarPromptRender,
@@ -32,6 +33,8 @@ router = APIRouter(prefix="/radar", tags=["radar"], dependencies=[Depends(requir
 
 ALLOWED_EXPORT_ENTITIES = {"candidates", "evidence", "signals", "prompts", "goldenSet", "config", "multi"}
 ALLOWED_SOURCE_TYPES = {"manual_paste", "drag_drop", "api", "file_watcher", "unknown"}
+RADAR_REVIEW_VERDICTS = {"ITERATE", "RESEARCH_MORE"}
+RADAR_REVIEW_MATURITIES = {"raw_signal", "candidate", "researched"}
 RADAR_PROMPT_PLACEHOLDER_RE = re.compile(r"{{\s*([a-zA-Z0-9_\.]+)\s*}}")
 RADAR_CANDIDATE_MUTABLE_FIELDS = {
     "slug",
@@ -163,6 +166,118 @@ def serialize_radar_config(row: dict[str, Any]) -> dict[str, Any]:
         **row,
         "value": row.get("value") or [],
     }
+
+
+def serialize_portfolio_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "slug": row["slug"],
+        "name": row["name"],
+        "summary": row.get("summary"),
+        "hypothesis": row.get("hypothesis"),
+        "focus": row.get("focus"),
+        "scope": row.get("scope"),
+        "maturity": row.get("maturity"),
+        "build_level": row.get("build_level"),
+        "dominant_risk": row.get("dominant_risk"),
+        "verdict": row.get("verdict"),
+        "priority": row.get("priority"),
+        "scorecard": row.get("scorecard") or {},
+        "gates": row.get("gates") or {},
+        "decision_memo": row.get("decision_memo"),
+        "next_research": row.get("next_research") or {},
+        "kill_criteria": row.get("kill_criteria") or {},
+        "evidence_count": int(row.get("evidence_count") or 0),
+        "apply_log_count": int(row.get("apply_log_count") or 0),
+        "last_apply_at": row.get("last_apply_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def fetch_portfolio_candidates(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    return fetch_all(
+        conn,
+        """
+        SELECT
+            c.*,
+            COALESCE(e.evidence_count, 0)::int AS evidence_count,
+            COALESCE(a.apply_log_count, 0)::int AS apply_log_count,
+            a.last_apply_at
+        FROM radar_candidates c
+        LEFT JOIN (
+            SELECT candidate_id, COUNT(*)::int AS evidence_count
+            FROM radar_evidence
+            GROUP BY candidate_id
+        ) e ON e.candidate_id = c.id
+        LEFT JOIN (
+            SELECT candidate_id, COUNT(*)::int AS apply_log_count, MAX(created_at) AS last_apply_at
+            FROM radar_apply_logs
+            WHERE candidate_id IS NOT NULL
+            GROUP BY candidate_id
+        ) a ON a.candidate_id = c.id
+        ORDER BY c.updated_at DESC, c.slug
+        """,
+    )
+
+
+def group_counts(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = row.get(field) or "unassigned"
+        counts[str(key)] = counts.get(str(key), 0) + 1
+    return [{"value": key, "count": value} for key, value in sorted(counts.items())]
+
+
+def gates_has_failed_value(gates: dict[str, Any]) -> bool:
+    for value in gates.values():
+        if value is False:
+            return True
+        if isinstance(value, str) and value.lower() in {"failed", "fail", "weak", "blocked", "red"}:
+            return True
+    return False
+
+
+def gates_incomplete(gates: dict[str, Any]) -> bool:
+    return not gates or any(value is None or value == "" for value in gates.values())
+
+
+def candidate_queue_reasons(row: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    verdict = row.get("verdict")
+    maturity = row.get("maturity")
+    scorecard = row.get("scorecard") or {}
+    gates = row.get("gates") or {}
+    evidence_count = int(row.get("evidence_count") or 0)
+    if not verdict:
+        reasons.append("missing_verdict")
+    elif str(verdict).upper() in RADAR_REVIEW_VERDICTS:
+        reasons.append("review_verdict")
+    if maturity in RADAR_REVIEW_MATURITIES:
+        reasons.append("review_maturity")
+    if not scorecard:
+        reasons.append("missing_scorecard")
+    if gates_incomplete(gates):
+        reasons.append("incomplete_gates")
+    if evidence_count < 1:
+        reasons.append("low_evidence")
+    return reasons
+
+
+def build_matrix(rows: list[dict[str, Any]], row_field: str, column_field: str) -> dict[str, Any]:
+    row_values = sorted({str(row.get(row_field) or "unassigned") for row in rows})
+    column_values = sorted({str(row.get(column_field) or "unassigned") for row in rows})
+    cells: list[dict[str, Any]] = []
+    for row_value in row_values:
+        for column_value in column_values:
+            candidates = [
+                {"id": str(row["id"]), "slug": row["slug"], "name": row["name"]}
+                for row in rows
+                if str(row.get(row_field) or "unassigned") == row_value
+                and str(row.get(column_field) or "unassigned") == column_value
+            ]
+            cells.append({"row": row_value, "column": column_value, "count": len(candidates), "candidates": candidates})
+    return {"rows": row_values, "columns": column_values, "cells": cells}
 
 
 def get_radar_candidate_or_404(conn: psycopg.Connection, candidate_id: UUID):
@@ -1039,6 +1154,99 @@ def cancel_radar_prompt_run(prompt_run_id: UUID, conn: psycopg.Connection = Depe
     row = update_row(conn, "radar_prompt_runs", {"id": prompt_run_id}, {"status": "cancelled"})
     assert row is not None
     return serialize_radar_prompt_run(row)
+
+
+@router.get("/portfolio/overview")
+def get_radar_portfolio_overview(conn: psycopg.Connection = Depends(get_db)):
+    rows = fetch_portfolio_candidates(conn)
+    without_verdict = [row for row in rows if not row.get("verdict")]
+    without_evidence = [row for row in rows if int(row.get("evidence_count") or 0) == 0]
+    failed_gates = [row for row in rows if gates_has_failed_value(row.get("gates") or {})]
+    return {
+        "total_candidates": len(rows),
+        "count_by_verdict": group_counts(rows, "verdict"),
+        "count_by_maturity": group_counts(rows, "maturity"),
+        "count_by_focus": group_counts(rows, "focus"),
+        "count_by_scope": group_counts(rows, "scope"),
+        "count_by_dominant_risk": group_counts(rows, "dominant_risk"),
+        "count_by_build_level": group_counts(rows, "build_level"),
+        "candidates_without_verdict": [serialize_portfolio_candidate(row) for row in without_verdict],
+        "candidates_without_evidence": [serialize_portfolio_candidate(row) for row in without_evidence],
+        "candidates_with_failed_gates": [serialize_portfolio_candidate(row) for row in failed_gates],
+        "recently_updated_candidates": [serialize_portfolio_candidate(row) for row in rows[:8]],
+    }
+
+
+@router.get("/portfolio/matrix/focus-scope")
+def get_radar_portfolio_focus_scope_matrix(conn: psycopg.Connection = Depends(get_db)):
+    return build_matrix(fetch_portfolio_candidates(conn), "focus", "scope")
+
+
+@router.get("/portfolio/matrix/maturity-verdict")
+def get_radar_portfolio_maturity_verdict_matrix(conn: psycopg.Connection = Depends(get_db)):
+    return build_matrix(fetch_portfolio_candidates(conn), "maturity", "verdict")
+
+
+@router.get("/portfolio/risk-distribution")
+def get_radar_portfolio_risk_distribution(conn: psycopg.Connection = Depends(get_db)):
+    rows = fetch_portfolio_candidates(conn)
+    risks: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        risk = str(row.get("dominant_risk") or "unassigned")
+        risks.setdefault(risk, []).append(serialize_portfolio_candidate(row))
+    return [
+        {"dominant_risk": risk, "count": len(candidates), "candidates": candidates}
+        for risk, candidates in sorted(risks.items())
+    ]
+
+
+@router.get("/portfolio/selection-queue")
+def get_radar_portfolio_selection_queue(conn: psycopg.Connection = Depends(get_db)):
+    rows = fetch_portfolio_candidates(conn)
+    items = []
+    for row in rows:
+        reasons = candidate_queue_reasons(row)
+        if reasons:
+            items.append({**serialize_portfolio_candidate(row), "reasons": reasons})
+    return items
+
+
+@router.post("/portfolio/compare")
+def compare_radar_portfolio_candidates(
+    payload: RadarPortfolioCompareRequest,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    candidate_ids = [str(candidate_id) for candidate_id in payload.candidate_ids]
+    rows = fetch_all(
+        conn,
+        """
+        SELECT
+            c.*,
+            COALESCE(e.evidence_count, 0)::int AS evidence_count,
+            COALESCE(a.apply_log_count, 0)::int AS apply_log_count,
+            a.last_apply_at
+        FROM radar_candidates c
+        LEFT JOIN (
+            SELECT candidate_id, COUNT(*)::int AS evidence_count
+            FROM radar_evidence
+            GROUP BY candidate_id
+        ) e ON e.candidate_id = c.id
+        LEFT JOIN (
+            SELECT candidate_id, COUNT(*)::int AS apply_log_count, MAX(created_at) AS last_apply_at
+            FROM radar_apply_logs
+            WHERE candidate_id IS NOT NULL
+            GROUP BY candidate_id
+        ) a ON a.candidate_id = c.id
+        WHERE c.id = ANY(%s::uuid[])
+        ORDER BY c.updated_at DESC, c.slug
+        """,
+        (candidate_ids,),
+    )
+    found_ids = {str(row["id"]) for row in rows}
+    missing_ids = [candidate_id for candidate_id in candidate_ids if candidate_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Radar candidates not found: {', '.join(missing_ids)}")
+    return {"items": [serialize_portfolio_candidate(row) for row in rows]}
 
 
 @router.get("/file-imports")

@@ -17,6 +17,8 @@ def test_radar_openapi_and_seeded_config(app_client, auth_headers):
     assert "/radar/apply-logs" in paths
     assert "/radar/prompt-runs" in paths
     assert "/radar/file-imports" in paths
+    assert "/radar/portfolio/overview" in paths
+    assert "/radar/portfolio/compare" in paths
 
     config_response = app_client.get("/radar/config", headers=auth_headers)
     assert config_response.status_code == 200
@@ -551,3 +553,143 @@ def test_radar_apply_json_accepts_file_watcher_source_type(app_client, auth_head
     detail_response = app_client.get(f"/radar/apply-logs/{apply_log_id}", headers=auth_headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["source_type"] == "file_watcher"
+
+
+def seed_portfolio_candidate(app_client, auth_headers, slug: str, patch: dict):
+    candidate = create_candidate(app_client, auth_headers, slug)
+    response = app_client.patch(
+        f"/radar/candidates/{candidate['id']}",
+        headers=auth_headers,
+        json=patch,
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_radar_portfolio_overview_counts_and_flags(app_client, auth_headers):
+    advanced = seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "portfolio-advanced",
+        {
+            "verdict": "ADVANCE",
+            "focus": "quick_win",
+            "scope": "uruguay",
+            "maturity": "researched",
+            "dominant_risk": "sales_risk",
+            "build_level": "standalone_product",
+            "gates": {"buyer": "passed"},
+        },
+    )
+    seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "portfolio-failed-gates",
+        {
+            "verdict": "KILL",
+            "focus": "moonshot",
+            "scope": "global",
+            "maturity": "candidate",
+            "dominant_risk": "technical_risk",
+            "build_level": "agent_workflow",
+            "gates": {"data": "failed"},
+        },
+    )
+    seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "portfolio-missing-verdict",
+        {
+            "focus": "quick_win",
+            "scope": "latam",
+            "maturity": "raw_signal",
+            "dominant_risk": "market_risk",
+            "build_level": "service_offer",
+        },
+    )
+
+    evidence_response = app_client.post(
+        f"/radar/candidates/{advanced['id']}/evidence",
+        headers=auth_headers,
+        json={"kind": "interview", "title": "Buyer signal", "claim": "Buyer confirmed urgency."},
+    )
+    assert evidence_response.status_code == 201
+
+    response = app_client.get("/radar/portfolio/overview", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_candidates"] >= 3
+    verdict_counts = {item["value"]: item["count"] for item in payload["count_by_verdict"]}
+    assert verdict_counts["ADVANCE"] >= 1
+    assert any(item["slug"] == "portfolio-missing-verdict" for item in payload["candidates_without_verdict"])
+    assert any(item["slug"] == "portfolio-failed-gates" for item in payload["candidates_with_failed_gates"])
+
+
+def test_radar_portfolio_matrices_risk_queue_and_compare(app_client, auth_headers):
+    first = seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "portfolio-compare-one",
+        {
+            "verdict": "ITERATE",
+            "focus": "quick_win",
+            "scope": "uruguay",
+            "maturity": "candidate",
+            "dominant_risk": "market_risk",
+            "scorecard": {"market": 7},
+            "gates": {"problem": None},
+            "decision_memo": "Needs one more data probe.",
+        },
+    )
+    second = seed_portfolio_candidate(
+        app_client,
+        auth_headers,
+        "portfolio-compare-two",
+        {
+            "verdict": "PARK",
+            "focus": "research_bet",
+            "scope": "global",
+            "maturity": "researched",
+            "dominant_risk": "data_risk",
+            "scorecard": {"market": 4},
+            "gates": {"problem": "passed"},
+        },
+    )
+
+    focus_scope = app_client.get("/radar/portfolio/matrix/focus-scope", headers=auth_headers)
+    assert focus_scope.status_code == 200
+    assert any(cell["row"] == "quick_win" and cell["column"] == "uruguay" and cell["count"] >= 1 for cell in focus_scope.json()["cells"])
+
+    maturity_verdict = app_client.get("/radar/portfolio/matrix/maturity-verdict", headers=auth_headers)
+    assert maturity_verdict.status_code == 200
+    assert any(cell["row"] == "candidate" and cell["column"] == "ITERATE" and cell["count"] >= 1 for cell in maturity_verdict.json()["cells"])
+
+    risks = app_client.get("/radar/portfolio/risk-distribution", headers=auth_headers)
+    assert risks.status_code == 200
+    assert any(item["dominant_risk"] == "market_risk" and item["count"] >= 1 for item in risks.json())
+
+    queue = app_client.get("/radar/portfolio/selection-queue", headers=auth_headers)
+    assert queue.status_code == 200
+    queued = {item["slug"]: item["reasons"] for item in queue.json()}
+    assert "portfolio-compare-one" in queued
+    assert "review_verdict" in queued["portfolio-compare-one"]
+    assert "incomplete_gates" in queued["portfolio-compare-one"]
+
+    compare = app_client.post(
+        "/radar/portfolio/compare",
+        headers=auth_headers,
+        json={"candidate_ids": [first["id"], second["id"]]},
+    )
+    assert compare.status_code == 200
+    compared = {item["slug"]: item for item in compare.json()["items"]}
+    assert compared["portfolio-compare-one"]["scorecard"]["market"] == 7
+    assert compared["portfolio-compare-two"]["verdict"] == "PARK"
+
+
+def test_radar_portfolio_compare_rejects_missing_candidate(app_client, auth_headers):
+    response = app_client.post(
+        "/radar/portfolio/compare",
+        headers=auth_headers,
+        json={"candidate_ids": ["00000000-0000-0000-0000-000000000001"]},
+    )
+    assert response.status_code == 404

@@ -45,6 +45,11 @@ import type {
   RadarFileImport,
   RadarPrompt,
   RadarPromptInput,
+  RadarPortfolioCompareResponse,
+  RadarPortfolioMatrix,
+  RadarPortfolioOverview,
+  RadarRiskDistributionItem,
+  RadarSelectionQueueItem,
   RadarPromptRenderInput,
   RadarPromptRenderResult,
   RadarPromptRun,
@@ -280,6 +285,33 @@ export function getRadarFileImports(filters: {
 
 export function getRadarFileImport(fileImportId: string) {
   return dashboardFetch<RadarFileImport>(`/radar/file-imports/${fileImportId}`);
+}
+
+export function getRadarPortfolioOverview() {
+  return dashboardFetch<RadarPortfolioOverview>("/radar/portfolio/overview");
+}
+
+export function getRadarPortfolioFocusScopeMatrix() {
+  return dashboardFetch<RadarPortfolioMatrix>("/radar/portfolio/matrix/focus-scope");
+}
+
+export function getRadarPortfolioMaturityVerdictMatrix() {
+  return dashboardFetch<RadarPortfolioMatrix>("/radar/portfolio/matrix/maturity-verdict");
+}
+
+export function getRadarPortfolioRiskDistribution() {
+  return dashboardFetch<RadarRiskDistributionItem[]>("/radar/portfolio/risk-distribution");
+}
+
+export function getRadarPortfolioSelectionQueue() {
+  return dashboardFetch<RadarSelectionQueueItem[]>("/radar/portfolio/selection-queue");
+}
+
+export function compareRadarPortfolioCandidates(candidateIds: string[]) {
+  return dashboardWrite<RadarPortfolioCompareResponse>("/radar/portfolio/compare", {
+    method: "POST",
+    body: JSON.stringify({ candidate_ids: candidateIds }),
+  });
 }
 
 export function applyRadarJson(
