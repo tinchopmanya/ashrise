@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,6 +16,8 @@ from app.schemas import (
     RadarCandidatePatch,
     RadarConfigPut,
     RadarEvidenceCreate,
+    RadarFileImportCreate,
+    RadarFileImportPatch,
     RadarPromptCreate,
     RadarPromptPatch,
     RadarPromptRender,
@@ -29,7 +31,7 @@ from app.schemas import (
 router = APIRouter(prefix="/radar", tags=["radar"], dependencies=[Depends(require_bearer_token)])
 
 ALLOWED_EXPORT_ENTITIES = {"candidates", "evidence", "signals", "prompts", "goldenSet", "config", "multi"}
-ALLOWED_SOURCE_TYPES = {"manual_paste", "drag_drop", "api", "unknown"}
+ALLOWED_SOURCE_TYPES = {"manual_paste", "drag_drop", "api", "file_watcher", "unknown"}
 RADAR_PROMPT_PLACEHOLDER_RE = re.compile(r"{{\s*([a-zA-Z0-9_\.]+)\s*}}")
 RADAR_CANDIDATE_MUTABLE_FIELDS = {
     "slug",
@@ -1037,6 +1039,77 @@ def cancel_radar_prompt_run(prompt_run_id: UUID, conn: psycopg.Connection = Depe
     row = update_row(conn, "radar_prompt_runs", {"id": prompt_run_id}, {"status": "cancelled"})
     assert row is not None
     return serialize_radar_prompt_run(row)
+
+
+@router.get("/file-imports")
+def list_radar_file_imports(
+    status: str | None = None,
+    file_hash: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    conn: psycopg.Connection = Depends(get_db),
+):
+    where_clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        where_clauses.append("status = %s")
+        params.append(status)
+    if file_hash:
+        where_clauses.append("file_hash = %s")
+        params.append(file_hash)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    rows = fetch_all(
+        conn,
+        f"SELECT * FROM radar_file_imports {where_sql} ORDER BY created_at DESC LIMIT %s",
+        [*params, limit],
+    )
+    return [serialize_radar_file_import(row) for row in rows]
+
+
+@router.post("/file-imports", status_code=201)
+def create_radar_file_import(payload: RadarFileImportCreate, conn: psycopg.Connection = Depends(get_db)):
+    if payload.apply_log_id is not None:
+        get_radar_apply_log_or_404(conn, payload.apply_log_id)
+    row = insert_row(
+        conn,
+        "radar_file_imports",
+        {
+            "filename": payload.filename,
+            "original_path": payload.original_path,
+            "stored_path": payload.stored_path,
+            "file_hash": payload.file_hash,
+            "status": payload.status,
+            "apply_log_id": payload.apply_log_id,
+            "payload_summary": payload.payload_summary,
+            "error_message": payload.error_message,
+            "processed_at": datetime.now(timezone.utc) if payload.status != "pending" else None,
+        },
+    )
+    return serialize_radar_file_import(row)
+
+
+@router.get("/file-imports/{file_import_id}")
+def get_radar_file_import(file_import_id: UUID, conn: psycopg.Connection = Depends(get_db)):
+    row = fetch_one(conn, "SELECT * FROM radar_file_imports WHERE id = %s", (file_import_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Radar file import '{file_import_id}' not found")
+    return serialize_radar_file_import(row)
+
+
+@router.patch("/file-imports/{file_import_id}")
+def patch_radar_file_import(
+    file_import_id: UUID,
+    payload: RadarFileImportPatch,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    data = payload.model_dump(exclude_unset=True)
+    if "apply_log_id" in data and data["apply_log_id"] is not None:
+        get_radar_apply_log_or_404(conn, data["apply_log_id"])
+    if data.get("status") in {"processed", "failed", "duplicate"} and "processed_at" not in data:
+        data["processed_at"] = datetime.now(timezone.utc)
+    row = update_row(conn, "radar_file_imports", {"id": file_import_id}, data)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Radar file import '{file_import_id}' not found")
+    return serialize_radar_file_import(row)
 
 
 @router.get("/apply-logs")

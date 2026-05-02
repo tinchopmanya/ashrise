@@ -276,7 +276,7 @@ class RadarApplyLog(Base):
             name="radar_apply_logs_status_check",
         ),
         CheckConstraint(
-            "source_type IN ('manual_paste', 'drag_drop', 'api', 'unknown')",
+            "source_type IN ('manual_paste', 'drag_drop', 'api', 'file_watcher', 'unknown')",
             name="radar_apply_logs_source_type_check",
         ),
     )
@@ -312,16 +312,16 @@ class RadarFileImport(Base):
     __tablename__ = "radar_file_imports"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'applied', 'failed', 'duplicate')",
+            "status IN ('pending', 'processed', 'failed', 'duplicate')",
             name="radar_file_imports_status_check",
         ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, server_default=func.uuid_generate_v4())
-    file_name: Mapped[str] = mapped_column(Text, nullable=False)
-    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    file_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'manual'"))
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    original_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stored_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_hash: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'pending'"))
     apply_log_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),

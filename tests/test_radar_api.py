@@ -16,6 +16,7 @@ def test_radar_openapi_and_seeded_config(app_client, auth_headers):
     assert "/radar/candidates/{candidate_id}/evidence" in paths
     assert "/radar/apply-logs" in paths
     assert "/radar/prompt-runs" in paths
+    assert "/radar/file-imports" in paths
 
     config_response = app_client.get("/radar/config", headers=auth_headers)
     assert config_response.status_code == 200
@@ -474,3 +475,79 @@ def test_radar_apply_logs_endpoint_filters(app_client, auth_headers):
     detail_response = app_client.get(f"/radar/apply-logs/{apply_log_id}", headers=auth_headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["candidate_id"] == candidate["id"]
+
+
+def test_radar_file_imports_endpoints(app_client, auth_headers):
+    create_response = app_client.post(
+        "/radar/file-imports",
+        headers=auth_headers,
+        json={
+            "filename": "radar_file_imports_test.json",
+            "original_path": "data/radar/inbox/radar_file_imports_test.json",
+            "file_hash": "abc123",
+            "status": "pending",
+        },
+    )
+    assert create_response.status_code == 201
+    file_import = create_response.json()
+    assert file_import["filename"] == "radar_file_imports_test.json"
+    assert file_import["status"] == "pending"
+
+    patch_response = app_client.patch(
+        f"/radar/file-imports/{file_import['id']}",
+        headers=auth_headers,
+        json={
+            "status": "failed",
+            "stored_path": "data/radar/failed/radar_file_imports_test.json",
+            "error_message": "invalid json",
+            "payload_summary": {"error": "invalid json"},
+        },
+    )
+    assert patch_response.status_code == 200
+    patched = patch_response.json()
+    assert patched["status"] == "failed"
+    assert patched["processed_at"] is not None
+
+    list_response = app_client.get("/radar/file-imports?status=failed&file_hash=abc123&limit=5", headers=auth_headers)
+    assert list_response.status_code == 200
+    assert any(item["id"] == file_import["id"] for item in list_response.json())
+
+    detail_response = app_client.get(f"/radar/file-imports/{file_import['id']}", headers=auth_headers)
+    assert detail_response.status_code == 200
+    assert detail_response.json()["error_message"] == "invalid json"
+
+
+def test_radar_file_imports_reject_invalid_payload(app_client, auth_headers):
+    response = app_client.post(
+        "/radar/file-imports",
+        headers=auth_headers,
+        json={
+            "filename": "radar_missing_hash.json",
+            "status": "processed",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_radar_apply_json_accepts_file_watcher_source_type(app_client, auth_headers):
+    candidate = create_candidate(app_client, auth_headers, "file-watcher-source")
+
+    response = app_client.post(
+        "/radar/apply-json",
+        headers=auth_headers,
+        json={
+            "meta": {
+                "candidateId": candidate["id"],
+                "sourceType": "file_watcher",
+            },
+            "updates": {
+                "summary": "Imported from local inbox",
+            },
+        },
+    )
+    assert response.status_code == 201
+    apply_log_id = response.json()["apply_log_id"]
+
+    detail_response = app_client.get(f"/radar/apply-logs/{apply_log_id}", headers=auth_headers)
+    assert detail_response.status_code == 200
+    assert detail_response.json()["source_type"] == "file_watcher"

@@ -774,6 +774,43 @@ class RadarApplyJsonPayload(StrictModel):
     payload: dict[str, Any]
 
 
+class RadarFileImportCreate(StrictModel):
+    filename: str
+    original_path: str | None = None
+    stored_path: str | None = None
+    file_hash: str
+    status: Literal["pending", "processed", "failed", "duplicate"] = "pending"
+    apply_log_id: UUID | None = None
+    payload_summary: dict[str, Any] | None = None
+    error_message: str | None = None
+
+    @field_validator("filename", "original_path", "stored_path", "file_hash", "error_message")
+    @classmethod
+    def validate_file_import_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+    @field_validator("filename", "file_hash")
+    @classmethod
+    def validate_required_file_import_text(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("must not be empty")
+        return value
+
+
+class RadarFileImportPatch(StrictModel):
+    stored_path: str | None = None
+    status: Literal["pending", "processed", "failed", "duplicate"] | None = None
+    apply_log_id: UUID | None = None
+    payload_summary: dict[str, Any] | None = None
+    error_message: str | None = None
+    processed_at: datetime | None = None
+
+    @field_validator("stored_path", "error_message")
+    @classmethod
+    def validate_file_import_patch_text(cls, value: str | None) -> str | None:
+        return normalize_text(value)
+
+
 class RadarEvidenceCreate(StrictModel):
     kind: str
     title: str | None = None

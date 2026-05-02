@@ -25,6 +25,7 @@ import {
   getRadarCandidateEvidence,
   getRadarCandidates,
   getRadarConfig,
+  getRadarFileImports,
   getRadarPrompt,
   getRadarPromptRuns,
   getRadarPrompts,
@@ -96,6 +97,7 @@ import type {
   RadarCandidate,
   RadarConfigItem,
   RadarEvidence,
+  RadarFileImport,
   RadarPrompt,
   RadarPromptRenderResult,
   RadarPromptRun,
@@ -6315,6 +6317,10 @@ function RadarImportPage() {
     queryKey: ["radar-prompt-runs", "waiting-import"],
     queryFn: () => getRadarPromptRuns({ status: "waiting_import", limit: "8" }),
   });
+  const fileImportsQuery = useQuery({
+    queryKey: ["radar-file-imports", "recent"],
+    queryFn: () => getRadarFileImports({ limit: "10" }),
+  });
   const selectedCandidateQuery = useQuery({
     queryKey: ["radar-candidate", selectedCandidateId],
     queryFn: () => getRadarCandidate(selectedCandidateId),
@@ -6366,6 +6372,7 @@ function RadarImportPage() {
       queryClient.invalidateQueries({ queryKey: ["radar-evidence"] });
       queryClient.invalidateQueries({ queryKey: ["radar-apply-logs"] });
       queryClient.invalidateQueries({ queryKey: ["radar-prompt-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["radar-file-imports"] });
     },
   });
 
@@ -6375,6 +6382,7 @@ function RadarImportPage() {
   const candidateLogs = (selectedLogsQuery.data as RadarApplyLog[] | undefined) || [];
   const recentLogs = (recentLogsQuery.data as RadarApplyLog[] | undefined) || [];
   const waitingPromptRuns = (waitingPromptRunsQuery.data as RadarPromptRun[] | undefined) || [];
+  const fileImports = (fileImportsQuery.data as RadarFileImport[] | undefined) || [];
 
   function injectSourceType(payload: Record<string, unknown>) {
     const cloned = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
@@ -6584,6 +6592,48 @@ function RadarImportPage() {
                 </div>
               )}
             </Section>
+          </div>
+        </Section>
+
+        <Section title="File Inbox" eyebrow="Watcher local" stagger={3} aside={<span className="meta-pill">{fileImports.length} imports</span>}>
+          <div className="stack-list compact">
+            <article className="list-card">
+              <KeyValueList
+                items={[
+                  { label: "inbox", value: "data/radar/inbox" },
+                  { label: "processed", value: "data/radar/processed" },
+                  { label: "failed", value: "data/radar/failed" },
+                  { label: "pattern", value: "radar_*.json" },
+                ]}
+              />
+              <p className="panel-note">
+                1. CopiÃ¡ o ejecutÃ¡ un prompt en ChatGPT Web / Claude Web. 2. DescargÃ¡ el resultado como radar_*.json.
+                3. Movelo a data/radar/inbox. 4. El watcher lo procesa y lo mueve a processed o failed.
+              </p>
+            </article>
+            {fileImportsQuery.isLoading ? (
+              <SkeletonBlock height={180} />
+            ) : fileImports.length === 0 ? (
+              <StateScreen title="Sin file imports" body="TodavÃ­a no hay archivos procesados por el watcher local." />
+            ) : (
+              fileImports.map((item) => (
+                <article className="list-card" key={item.id}>
+                  <div className="row spread">
+                    <h4>{item.filename}</h4>
+                    <StatusChip value={item.status} />
+                  </div>
+                  <p>{item.error_message || item.stored_path || item.original_path || "Import registrado sin detalle extra."}</p>
+                  <KeyValueList
+                    items={[
+                      { label: "apply_log", value: item.apply_log_id || "â€”" },
+                      { label: "hash", value: item.file_hash.slice(0, 16) },
+                      { label: "created", value: formatDateTime(item.created_at) },
+                      { label: "processed", value: formatDateTime(item.processed_at) },
+                    ]}
+                  />
+                </article>
+              ))
+            )}
           </div>
         </Section>
 

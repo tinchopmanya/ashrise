@@ -16,6 +16,12 @@ build/
 .env.*
 .ashrise/
 tmp/
+data/radar/inbox/*.json
+data/radar/processed/*.json
+data/radar/failed/*.json
+!data/radar/inbox/.gitkeep
+!data/radar/processed/.gitkeep
+!data/radar/failed/.gitkeep
 
 # IDE
 .vscode/

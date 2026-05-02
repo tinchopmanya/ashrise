@@ -42,6 +42,7 @@ import type {
   RadarConfigItem,
   RadarEvidence,
   RadarEvidenceInput,
+  RadarFileImport,
   RadarPrompt,
   RadarPromptInput,
   RadarPromptRenderInput,
@@ -267,6 +268,18 @@ export function getRadarApplyLogs(filters: {
 
 export function getRadarApplyLog(applyLogId: string) {
   return dashboardFetch<RadarApplyLog>(`/radar/apply-logs/${applyLogId}`);
+}
+
+export function getRadarFileImports(filters: {
+  status?: string;
+  file_hash?: string;
+  limit?: string;
+}) {
+  return dashboardFetch<RadarFileImport[]>("/radar/file-imports", filters);
+}
+
+export function getRadarFileImport(fileImportId: string) {
+  return dashboardFetch<RadarFileImport>(`/radar/file-imports/${fileImportId}`);
 }
 
 export function applyRadarJson(

@@ -489,7 +489,7 @@ export type RadarApplyLog = {
   candidate_id: string | null;
   prompt_id: string | null;
   prompt_version_id: string | null;
-  source_type: "manual_paste" | "drag_drop" | "api" | "unknown";
+  source_type: "manual_paste" | "drag_drop" | "api" | "file_watcher" | "unknown";
   recognized_format: string | null;
   status: "applied" | "failed" | "dry_run";
   model_used: string | null;
@@ -510,6 +510,20 @@ export type RadarApplyResult = {
   apply_log_id: string;
   dry_run: boolean;
   prompt_run_id: string | null;
+};
+
+export type RadarFileImport = {
+  id: string;
+  filename: string;
+  original_path: string | null;
+  stored_path: string | null;
+  file_hash: string;
+  status: "pending" | "processed" | "failed" | "duplicate";
+  apply_log_id: string | null;
+  payload_summary: Record<string, unknown> | null;
+  error_message: string | null;
+  created_at: string;
+  processed_at: string | null;
 };
 
 export type RadarPrompt = {
